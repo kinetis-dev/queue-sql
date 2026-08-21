@@ -158,8 +158,8 @@ final class SqlQueue implements QueueInterface
         // afterwards without hitting Revolt's "event loop is already
         // running" reentrancy error — nesting a second concurrently() call
         // *inside* this one's still-running loop would still hit that
-        // error, the same disclosed limitation already found verifying this
-        // class's own FOR UPDATE SKIP LOCKED concurrency.
+        // error, the same limitation this class's own FOR UPDATE SKIP
+        // LOCKED concurrency has.
         return concurrently([fn (): ?QueuedJob => $this->pollUntilFoundOrTimedOut($timeoutSeconds, $queues)])[0];
     }
 
