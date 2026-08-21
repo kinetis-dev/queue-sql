@@ -22,8 +22,7 @@ final class SqlQueueFactory
         // QUEUE_VISIBILITY_TIMEOUT_SECONDS has no default — absent means
         // SqlQueue's own behavior of a crashed worker's row staying
         // reserved forever, unchanged unless explicitly opted into.
-        $visibilityTimeoutRaw = $config->string(Config::scopedKey('QUEUE_VISIBILITY_TIMEOUT_SECONDS', $connectionName), '');
-        $visibilityTimeoutSeconds = $visibilityTimeoutRaw === '' ? null : (int) $visibilityTimeoutRaw;
+        $visibilityTimeoutSeconds = $config->intOrNull(Config::scopedKey('QUEUE_VISIBILITY_TIMEOUT_SECONDS', $connectionName));
 
         return new SqlQueue(SqlConnectionFactory::fromConfig($config, $connectionName), $visibilityTimeoutSeconds);
     }
