@@ -1,0 +1,47 @@
+<?php
+
+declare(strict_types=1);
+
+use Kinetis\Persistence\Contract\MysqlLink;
+use Kinetis\Persistence\Contract\PostgresLink;
+use Kinetis\Migrations\Migration;
+
+// Postgres version. Copy this file into your own migrations/ directory
+// (see kinetis/migrations), renaming it with a timestamp prefix, e.g.
+// 20260810143000_create_kinetis_queue_jobs_table.php.
+// Required by Kinetis\Queue\SqlQueue.
+//
+// BIGSERIAL is the Postgres equivalent of MySQL's BIGINT UNSIGNED
+// AUTO_INCREMENT — see the .mysql. sibling stub; migrations are raw SQL
+// by design, so there is deliberately no shared, dialect-abstracted
+// version of this file. Postgres has no UNSIGNED integer type at all,
+// and — unlike MySQL — has no inline INDEX clause inside CREATE TABLE;
+// an index needs its own separate CREATE INDEX statement.
+
+return new class implements Migration
+{
+    public function up(MysqlLink|PostgresLink $db): void
+    {
+        $db->execute(<<<'SQL'
+            CREATE TABLE kinetis_queue_jobs (
+                id BIGSERIAL PRIMARY KEY,
+                class VARCHAR(255) NOT NULL,
+                queue VARCHAR(255) NOT NULL DEFAULT 'default',
+                args TEXT NOT NULL,
+                available_at TIMESTAMP NOT NULL,
+                reserved_at TIMESTAMP NULL,
+                attempts INT NOT NULL DEFAULT 0,
+                max_attempts INT NULL,
+                metadata TEXT NULL,
+                created_at TIMESTAMP NOT NULL
+            )
+            SQL);
+
+        $db->execute('CREATE INDEX kinetis_queue_jobs_queue_available_at_index ON kinetis_queue_jobs (queue, available_at, reserved_at)');
+    }
+
+    public function down(MysqlLink|PostgresLink $db): void
+    {
+        $db->execute('DROP TABLE kinetis_queue_jobs');
+    }
+};
