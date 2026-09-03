@@ -10,6 +10,7 @@ use Kinetis\Async\Timer;
 use Kinetis\Persistence\TransactionGuard;
 use Kinetis\Queue\Job;
 use Kinetis\Queue\JobSerializer;
+use Kinetis\Queue\QueueContract;
 use Kinetis\Queue\QueuedJob;
 use Kinetis\Queue\QueueInterface;
 use Psr\Log\NullLogger;
@@ -52,7 +53,19 @@ use Throwable;
  * Redis's BLPOP, so pop()'s blocking contract is implemented as a poll
  * loop instead, suspended between attempts via Kinetis\Async\Timer::delay()
  * rather than a real sleep() — the caller can't tell polling is
- * happening underneath.
+ * happening underneath. See QueueInterface's own docblock for the full
+ * cross-backend pop() contract this satisfies (validated the same way
+ * every other backend does, via Kinetis\Queue\QueueContract), and why
+ * this class deliberately does not delegate to
+ * Kinetis\Queue\Support\PopSweep the way RedisQueue/SqsQueue/RabbitMqQueue
+ * do: reserveNext()'s own single, priority-ordered SQL query already
+ * checks every queue as one atomic operation, which already gives the
+ * "immediate, priority-ordered sweep before any wait" property PopSweep
+ * exists to add for a backend that has to check queues one at a time —
+ * there's no per-queue loop here for that class to coordinate. The
+ * poll interval between reserveNext() attempts is bounded by whatever's
+ * actually left of the deadline, the same "do not overshoot materially"
+ * precision PopSweep applies elsewhere.
  *
  * `max_attempts` is set once at push() from that call's own $maxAttempts
  * argument (SQL NULL meaning "defer to the worker's own default" — see
@@ -110,6 +123,8 @@ final class SqlQueue implements QueueInterface
     #[\Override]
     public function push(Job $job, int $delaySeconds = 0, string $queue = 'default', ?int $maxAttempts = null): void
     {
+        QueueContract::assertValidPushArguments($delaySeconds, $queue, $maxAttempts);
+
         $telemetryToken = Telemetry::global()->jobPushStarted($job::class, $queue);
 
         try {
@@ -121,11 +136,15 @@ final class SqlQueue implements QueueInterface
                 'INSERT INTO ' . self::TABLE . ' (class, args, queue, available_at, attempts, max_attempts, metadata, created_at) VALUES (?, ?, ?, ?, 0, ?, ?, ?)',
                 [
                     $serialized['class'],
-                    json_encode($serialized['args'], JSON_THROW_ON_ERROR),
+                    // PRESERVE_ZERO_FRACTION: without it, an integral-valued
+                    // float argument (4.0) encodes as "4" and decodes back
+                    // as an int — a silent type change JobSerializer's own
+                    // portable-value contract promises never happens.
+                    json_encode($serialized['args'], JSON_THROW_ON_ERROR | JSON_PRESERVE_ZERO_FRACTION),
                     $queue,
                     self::formatTimestamp(time() + $delaySeconds),
                     $maxAttempts,
-                    $metadata === [] ? null : json_encode($metadata, JSON_THROW_ON_ERROR),
+                    $metadata === [] ? null : json_encode($metadata, JSON_THROW_ON_ERROR | JSON_PRESERVE_ZERO_FRACTION),
                     $now,
                 ],
             );
@@ -140,6 +159,8 @@ final class SqlQueue implements QueueInterface
     #[\Override]
     public function pop(int $timeoutSeconds = 0, array $queues = ['default']): ?QueuedJob
     {
+        QueueContract::assertValidPopArguments($timeoutSeconds, $queues);
+
         if ($queues === []) {
             return null;
         }
@@ -174,39 +195,105 @@ final class SqlQueue implements QueueInterface
             $row = $this->reserveNext($queues);
 
             if ($row !== null) {
-                /** @var array<string, mixed> $args */
-                $args = json_decode((string) $row['args'], true, flags: JSON_THROW_ON_ERROR);
-                /** @var class-string<Job> $class */
-                $class = $row['class'];
-
-                /** @var array<string, string> $metadata */
-                $metadata = isset($row['metadata']) && \is_string($row['metadata'])
-                    ? json_decode($row['metadata'], true, flags: JSON_THROW_ON_ERROR)
-                    : [];
-
-                return new QueuedJob(
-                    $class,
-                    $args,
-                    handle: $row['id'],
-                    queue: (string) $row['queue'],
-                    attempts: (int) $row['attempts'] + 1,
-                    maxAttempts: $row['max_attempts'] !== null ? (int) $row['max_attempts'] : null,
-                    metadata: $metadata,
+                return QueueContract::settleIfMalformed(
+                    (string) $row['queue'],
+                    fn (): QueuedJob => self::rowToQueuedJob($row),
+                    fn () => $this->deleteRow($row['id']),
                 );
             }
 
-            if ($deadline !== null && microtime(true) >= $deadline) {
+            if ($deadline === null) {
+                Timer::delay(self::POLL_INTERVAL_SECONDS);
+
+                continue;
+            }
+
+            // Bounded by whatever's actually left of the deadline, not
+            // always the full POLL_INTERVAL_SECONDS — the same "do not
+            // overshoot materially" precision Kinetis\Queue\Support\PopSweep
+            // applies for the backends that delegate to it directly (see
+            // this class's own docblock for why SqlQueue's single
+            // combined-priority-query design doesn't need that class
+            // itself).
+            $remaining = $deadline - microtime(true);
+
+            if ($remaining <= 0.0) {
                 return null;
             }
 
-            Timer::delay(self::POLL_INTERVAL_SECONDS);
+            Timer::delay(min(self::POLL_INTERVAL_SECONDS, $remaining));
         }
+    }
+
+    /**
+     * Extracted out of pollUntilFoundOrTimedOut() specifically so it's
+     * independently testable with a hand-built row array, no real
+     * database needed — the same reflectable-decode shape RedisQueue's
+     * own decodeQueuedJob() already has. Every field is read through one
+     * of QueueContract's own coercion helpers rather than trusted at a
+     * PHPStan-asserted @var shape — many database drivers return every
+     * column value as a string regardless of the SQL column's own type,
+     * a NULL column reads back as PHP null, and the row itself could have
+     * been populated some other way entirely; $row['class'] gets a real
+     * non-empty-string check it never had before, `args`/`metadata` are
+     * decoded through the same JSON-array coercion RedisQueue's own
+     * whole-payload decode uses (just per-column here, rather than one
+     * shared envelope) — `args` specifically goes one step further than
+     * coerceStoredJsonArray() alone, through coerceStoredArgs() too,
+     * since a JSON *list* column value ('["value"]', no object keys at
+     * all) would otherwise pass a bare is_array() check cleanly despite
+     * being a shape no real push() ever writes (see that method's own
+     * docblock for the concrete, incidental TypeError it would otherwise
+     * cause much later, deep inside job reconstruction) — metadata's own
+     * present-but-not-a-string case is deliberately still passed to
+     * coerceStoredMetadata() rather than
+     * pre-filtered to null, so a corrupted non-string column value is
+     * genuinely rejected instead of silently read as "no metadata" —
+     * and $row['attempts'] specifically goes through
+     * coerceStoredCompletedAttempts(), not the plain coerceStoredInteger()
+     * $row['max_attempts'] uses — this stored value is the
+     * completed-attempts count (0-indexed) that gets a real `+ 1` right
+     * below, and that method is what keeps a stored PHP_INT_MAX from
+     * silently overflowing that addition into a float, and also rejects
+     * a negative stored count outright. max_attempts is checked for
+     * *presence* first — QueueContract::assertFieldPresent() — since this
+     * class's own fixed table schema always selects that column, even
+     * when its own value is a genuine SQL NULL; only a genuinely missing
+     * key (a hand-built row, a schema drift) is a sign of corruption,
+     * which a plain array read could never distinguish from a present,
+     * legitimately-NULL column. Every failure here is caught by this
+     * class's own pollUntilFoundOrTimedOut() — see
+     * QueueContract::settleIfMalformed() — so a malformed row settles the
+     * already-reserved job rather than crashing the worker.
+     *
+     * @param array<string, mixed> $row
+     */
+    private static function rowToQueuedJob(array $row): QueuedJob
+    {
+        $class = QueueContract::coerceStoredClass($row['class'] ?? null);
+        $args = QueueContract::coerceStoredArgs(
+            QueueContract::coerceStoredJsonArray((string) ($row['args'] ?? ''), 'args'),
+        );
+        $metadata = QueueContract::coerceStoredMetadata($row['metadata'] ?? null);
+
+        QueueContract::assertFieldPresent($row, 'max_attempts');
+        $maxAttempts = QueueContract::coerceStoredMaxAttempts($row['max_attempts'], 'max_attempts');
+
+        return new QueuedJob(
+            $class,
+            $args,
+            handle: $row['id'],
+            queue: (string) $row['queue'],
+            attempts: QueueContract::coerceStoredCompletedAttempts($row['attempts'] ?? null, 'attempts') + 1,
+            maxAttempts: $maxAttempts,
+            metadata: $metadata,
+        );
     }
 
     #[\Override]
     public function ack(QueuedJob $job): void
     {
-        $this->db->execute(self::DELETE_TABLE . ' WHERE id = ?', [$job->handle]);
+        $this->deleteRow($job->handle);
     }
 
     #[\Override]
@@ -221,7 +308,19 @@ final class SqlQueue implements QueueInterface
     #[\Override]
     public function fail(QueuedJob $job): void
     {
-        $this->db->execute(self::DELETE_TABLE . ' WHERE id = ?', [$job->handle]);
+        $this->deleteRow($job->handle);
+    }
+
+    /**
+     * Shared by ack()/fail() (a real QueuedJob's own handle) and the
+     * malformed-row settlement path in pollUntilFoundOrTimedOut() (the
+     * raw row a decode failure was caught for, with no QueuedJob to read
+     * a handle off of) — the same DELETE either way, just reached from
+     * two different starting shapes.
+     */
+    private function deleteRow(mixed $id): void
+    {
+        $this->db->execute(self::DELETE_TABLE . ' WHERE id = ?', [$id]);
     }
 
     /**
@@ -260,12 +359,16 @@ final class SqlQueue implements QueueInterface
     /**
      * The "waiting" predicate size() and clear() share, mirroring
      * reserveNext()'s own reserved-row handling so the three never
-     * disagree about which jobs a worker could still pick up.
+     * disagree about which jobs a worker could still pick up — and the
+     * one choke point both of them validate $queue through before
+     * touching the database at all.
      *
      * @return array{string, list<string>}
      */
     private function waitingCondition(string $queue): array
     {
+        QueueContract::assertValidQueueName($queue);
+
         if ($this->visibilityTimeoutSeconds === null) {
             return ['queue = ? AND reserved_at IS NULL', [$queue]];
         }

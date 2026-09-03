@@ -15,6 +15,9 @@ require __DIR__ . '/../vendor/autoload.php';
 
 use Kinetis\Persistence\Contract\MysqlLink;
 use Kinetis\Persistence\Driver\MysqliAsyncClient;
+use Kinetis\Queue\Exception\InvalidPopTimeoutException;
+use Kinetis\Queue\Exception\InvalidQueueNameException;
+use Kinetis\Queue\Exception\MalformedJobSettledException;
 use Kinetis\Queue\Job;
 use Kinetis\Queue\QueuedJob;
 use Kinetis\Queue\QueueInterface;
@@ -79,6 +82,37 @@ function runQueueChecks(string $backend, QueueInterface $queue): void
     check("{$backend}: falls through to the default queue next", $remaining?->args['message'] === 'low-priority');
     $queue->ack($remaining);
 
+    // The deadline/priority-sweep contract is validated the same way
+    // across every backend, via Kinetis\Queue\QueueContract — SqlQueue's
+    // own single combined priority query never even needed the
+    // per-queue-loop fix RedisQueue/SqsQueue/RabbitMqQueue did, but it
+    // shares this input validation with all of them.
+    try {
+        $queue->pop(timeoutSeconds: -1);
+        check("{$backend}: a negative timeout is rejected", false);
+    } catch (InvalidPopTimeoutException) {
+        check("{$backend}: a negative timeout is rejected", true);
+    }
+
+    try {
+        $queue->pop(queues: ['default', '']);
+        check("{$backend}: an empty queue name is rejected", false);
+    } catch (InvalidQueueNameException) {
+        check("{$backend}: an empty queue name is rejected", true);
+    }
+
+    try {
+        $queue->pop(queues: ['default', 'high', 'default']);
+        check("{$backend}: a duplicate queue name is rejected", false);
+    } catch (InvalidQueueNameException) {
+        check("{$backend}: a duplicate queue name is rejected", true);
+    }
+
+    check(
+        "{$backend}: an empty queue list returns null, not an error",
+        $queue->pop(timeoutSeconds: 1, queues: []) === null,
+    );
+
     echo "\n";
 }
 
@@ -140,6 +174,56 @@ function runSqlQueueVisibilityTimeoutChecks(MysqlLink $mysql): void
     echo "\n";
 }
 
+/**
+ * KINETIS-63: a row that's already been reserved (its reserved_at set
+ * inside reserveNext()'s own transaction) but turns out to be malformed
+ * once decoded must not strand it forever, or crash the worker. Written
+ * directly via a raw INSERT — not through push(), which would never
+ * accept malformed data in the first place — the same "bypass the
+ * public API to simulate corrupted storage" a hand-edited row or a
+ * non-Kinetis writer would produce. Verified against the real database,
+ * not mocked: settleIfMalformed()'s own coordination logic is already
+ * unit tested (see QueueContractTest), but only a real MySQL round trip
+ * can prove the DELETE this backend's settle callback issues genuinely
+ * removes the row, rather than merely appearing to under a fake.
+ */
+function runMalformedRowChecks(MysqlLink $mysql): void
+{
+    echo "=== SqlQueue: malformed row settlement ===\n";
+
+    $mysql->execute('DELETE FROM kinetis_queue_jobs');
+
+    $mysql->execute(
+        'INSERT INTO kinetis_queue_jobs (class, queue, args, available_at, attempts, max_attempts, created_at) '
+        . "VALUES (?, 'default', ?, NOW(), 0, NULL, NOW())",
+        ['Some\\Job', 'not valid json'],
+    );
+
+    $queue = new SqlQueue($mysql);
+    $threw = null;
+
+    try {
+        $queue->pop(timeoutSeconds: 1);
+    } catch (MalformedJobSettledException $e) {
+        $threw = $e;
+    }
+
+    check('SqlQueue: pop() throws MalformedJobSettledException for a malformed reserved row', $threw !== null);
+    check('SqlQueue: the settled exception names the right queue', $threw?->queue === 'default');
+
+    $remaining = $mysql->execute('SELECT COUNT(*) AS c FROM kinetis_queue_jobs')->fetchRow();
+    check('SqlQueue: the malformed row was genuinely deleted, not stranded', (int) $remaining['c'] === 0);
+
+    // The loop must genuinely continue: a real, well-formed job pushed
+    // right after is still poppable normally.
+    $queue->push(new IntegrationTestJob('still works after a malformed row'));
+    $recovered = $queue->pop(timeoutSeconds: 5);
+    check('SqlQueue: a real job is still popped correctly afterward', $recovered?->args['message'] === 'still works after a malformed row');
+    $queue->ack($recovered);
+
+    echo "\n";
+}
+
 $mysql = new MysqliAsyncClient(
     getenv('MYSQL_HOST') ?: '127.0.0.1',
     getenv('MYSQL_USER') ?: 'testuser',
@@ -165,5 +249,6 @@ $mysql->execute(<<<'SQL'
     SQL);
 runQueueChecks('SqlQueue', new SqlQueue($mysql));
 runSqlQueueVisibilityTimeoutChecks($mysql);
+runMalformedRowChecks($mysql);
 
 echo "ALL CHECKS PASSED\n";

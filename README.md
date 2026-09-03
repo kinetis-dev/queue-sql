@@ -18,6 +18,10 @@
 
 ---
 
+Part of [Kinetis](https://kinetis.dev/), a non-blocking PHP framework for
+API-first applications, developed in the
+[kinetis-dev/kinetis](https://github.com/kinetis-dev/kinetis) monorepo.
+
 Adds MySQL/Postgres as a queue backend, riding an existing database
 instead of a separate service. `push()`/`pop()`/`ack()`/`release()`/`fail()`
 work exactly like any other backend — only your configuration changes.
@@ -56,7 +60,7 @@ DB_USER=app
 DB_PASSWORD=secret
 ```
 
-`DB_*` are the exact keys `kinetis/persistence` already reads. The one
+`DB_*` are the exact keys [`kinetis/persistence`](https://github.com/kinetis-dev/persistence) already reads. The one
 key this package introduces itself:
 
 | Key | Default | Purpose |
@@ -64,7 +68,7 @@ key this package introduces itself:
 | `QUEUE_VISIBILITY_TIMEOUT_SECONDS` | *(unset — never reclaimed)* | Seconds before a crashed worker's reserved job becomes poppable again. |
 
 Both are scoped by `QUEUE_CONNECTION_NAME` the same way every other
-backend's keys are. `kinetis/queue`'s own keys (`QUEUE_CONNECTION`,
+backend's keys are. [`kinetis/queue`](https://github.com/kinetis-dev/queue)'s own keys (`QUEUE_CONNECTION`,
 `QUEUE_MAX_ATTEMPTS`, ...) are documented in that package; full
 reference:
 [kinetis.dev/docs/config.html](https://kinetis.dev/docs/config.html).
@@ -75,8 +79,8 @@ reference:
 composer require kinetis/queue-sql
 ```
 
-Requires PHP 8.4+, `kinetis/framework`, `kinetis/queue`, and
-`kinetis/persistence`. Full documentation:
+Requires PHP 8.4+, [`kinetis/framework`](https://github.com/kinetis-dev/framework), [`kinetis/queue`](https://github.com/kinetis-dev/queue), and
+[`kinetis/persistence`](https://github.com/kinetis-dev/persistence). Full documentation:
 [kinetis.dev/docs/queue-sql.html](https://kinetis.dev/docs/queue-sql.html).
 
 ## License
