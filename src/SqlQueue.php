@@ -8,11 +8,11 @@ use Kinetis\Instrumentation\Telemetry;
 use Kinetis\Persistence\Contract\SqlLink;
 use Kinetis\Async\Timer;
 use Kinetis\Persistence\TransactionGuard;
+use Kinetis\Queue\ClearableQueueInterface;
 use Kinetis\Queue\Job;
 use Kinetis\Queue\JobSerializer;
 use Kinetis\Queue\QueueContract;
 use Kinetis\Queue\QueuedJob;
-use Kinetis\Queue\QueueInterface;
 use Psr\Log\NullLogger;
 use function Kinetis\Async\concurrently;
 use Throwable;
@@ -89,8 +89,17 @@ use Throwable;
  * with no cap; a genuinely fresh (never-reserved) row's own first
  * reservation is unaffected, leaving `attempts` untouched until an
  * actual release() call.
+ *
+ * A reclaimed row makes the delivery it was taken from obsolete while
+ * that worker may still be running: ack(), release() and fail() all
+ * address the row by id alone and report nothing when the row's current
+ * reservation is not the caller's, so a settlement arriving after the
+ * reclaim lands on whichever delivery holds the row. QueuedJob's own
+ * docblock states the delivery-receipt contract this leaves open, and
+ * $visibilityTimeoutSeconds null keeps a row reserved indefinitely
+ * rather than reclaiming it at all.
  */
-final class SqlQueue implements QueueInterface
+final class SqlQueue implements ClearableQueueInterface
 {
     private const TABLE = 'kinetis_queue_jobs';
 
@@ -344,24 +353,32 @@ final class SqlQueue implements QueueInterface
         return (int) ($row['c'] ?? 0);
     }
 
+    /**
+     * `reserved_at` alone decides what survives, never the visibility
+     * timeout size() and pop() read it through: a reservation past that
+     * timeout is reclaimable, which says another worker may take the
+     * work over, not that nobody is doing it. pop() makes that handover
+     * one row at a time under the row lock that keeps it safe; a clear
+     * has no handover to make, so it stops at rows no worker claimed.
+     */
     #[\Override]
     public function clear(string $queue = 'default'): int
     {
-        [$condition, $params] = $this->waitingCondition($queue);
+        QueueContract::assertValidQueueName($queue);
 
         // getRowCount() is nullable on the contract for result sets that
         // cannot report one; a DELETE always can.
         return $this->db
-            ->execute(self::DELETE_TABLE . " WHERE {$condition}", $params)
+            ->execute(self::DELETE_TABLE . ' WHERE queue = ? AND reserved_at IS NULL', [$queue])
             ->getRowCount() ?? 0;
     }
 
     /**
-     * The "waiting" predicate size() and clear() share, mirroring
-     * reserveNext()'s own reserved-row handling so the three never
-     * disagree about which jobs a worker could still pick up — and the
-     * one choke point both of them validate $queue through before
-     * touching the database at all.
+     * The "waiting" predicate size() reports on, mirroring
+     * reserveNext()'s own reserved-row handling so the two never
+     * disagree about which jobs a worker could still pick up — an
+     * expired reservation included, since pop() can reclaim it. clear()
+     * uses a narrower predicate of its own; see its docblock.
      *
      * @return array{string, list<string>}
      */

@@ -49,6 +49,21 @@ vendor/kinetis/queue-sql/resources/migrations/create_kinetis_queue_jobs_table.pg
 Copy whichever matches your database into your own `migrations/`
 directory with a timestamp prefix, then run `vendor/bin/kinetis migrate`.
 
+`SqlQueue` declares `Kinetis\Queue\ClearableQueueInterface`. Clearing
+deletes every row on the queue whose `reserved_at` is null, and reports
+how many the `DELETE` removed. That is narrower than what `size()`
+counts: under `QUEUE_VISIBILITY_TIMEOUT_SECONDS`, an expired reservation
+counts as waiting and `pop()` may reclaim it, but `clear()` still leaves
+it alone — the worker holding it may simply be slow, and still has a
+settlement to make.
+
+A settlement addresses a row by id, and the row carries no token saying
+which reservation wrote it, so this backend raises no
+`Kinetis\Queue\Exception\StaleJobHandleException`: a settlement
+arriving after another worker reclaimed the row lands on that worker's
+delivery. Keep the visibility timeout comfortably longer than your
+slowest job.
+
 ## Configuration
 
 ```

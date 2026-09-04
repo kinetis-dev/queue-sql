@@ -12,12 +12,11 @@ use Kinetis\Persistence\Contract\SqlTransaction;
 use RuntimeException;
 
 /**
- * Records every execute() call without touching a real database —
- * push() never calls query()/beginTransaction(), so those stay
- * unreachable-and-throwing, the same "never touched" idiom
- * SqlQueueTest's own neverTouchedLink() already establishes. Shared
- * between SqlQueuePushTelemetryTest and SqlQueuePushEnvelopeTest, both
- * of which only ever exercise push() against this fake.
+ * Records every execute() call without touching a real database — the
+ * statements it captures are what a test reads its assertions off.
+ * query()/beginTransaction() stay unreachable-and-throwing, the same
+ * "never touched" idiom SqlQueueTest's own neverTouchedLink() already
+ * establishes: no operation exercised against this fake reaches either.
  */
 final class RecordingSqlLink implements SqlLink
 {
@@ -27,7 +26,7 @@ final class RecordingSqlLink implements SqlLink
     #[\Override]
     public function query(string $sql): SqlResult
     {
-        throw new RuntimeException('push() should never call query().');
+        throw new RuntimeException('This link should never be queried.');
     }
 
     #[\Override]
@@ -71,7 +70,7 @@ final class RecordingSqlLink implements SqlLink
     #[\Override]
     public function beginTransaction(): SqlTransaction
     {
-        throw new RuntimeException('push() should never call beginTransaction().');
+        throw new RuntimeException('This link should never begin a transaction.');
     }
 
     #[\Override]

@@ -6,7 +6,7 @@ namespace Kinetis\QueueSql;
 
 use Kinetis\Config\Config;
 use Kinetis\Persistence\SqlConnectionFactory;
-use Kinetis\Queue\QueueInterface;
+use Kinetis\Queue\ClearableQueueInterface;
 
 /**
  * Builds the SQL queue backend `QUEUE_CONNECTION=sql` selects — called
@@ -14,10 +14,14 @@ use Kinetis\Queue\QueueInterface;
  * `class_exists()` check so core never depends on this package
  * directly, the same pattern used for every other optional queue
  * backend (`kinetis/queue-sqs`, `kinetis/queue-rabbitmq`).
+ *
+ * Returns `ClearableQueueInterface`, the capability this backend
+ * declares; see `QueueFactory` for why the connection-driven factory
+ * stays on `QueueInterface`.
  */
 final class SqlQueueFactory
 {
-    public static function fromConfig(Config $config, string $connectionName = 'default'): QueueInterface
+    public static function fromConfig(Config $config, string $connectionName = 'default'): ClearableQueueInterface
     {
         // QUEUE_VISIBILITY_TIMEOUT_SECONDS has no default — absent means
         // SqlQueue's own behavior of a crashed worker's row staying
