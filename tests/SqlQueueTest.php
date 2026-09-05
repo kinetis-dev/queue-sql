@@ -7,6 +7,7 @@ namespace Kinetis\QueueSql\Tests;
 use Kinetis\Persistence\Contract\SqlLink;
 use Kinetis\Persistence\Contract\SqlResult;
 use Kinetis\Persistence\Contract\SqlTransaction;
+use Kinetis\Queue\ClearableQueueInterface;
 use Kinetis\Queue\Exception\InvalidDelaySecondsException;
 use Kinetis\Queue\Exception\InvalidMaxAttemptsException;
 use Kinetis\Queue\Exception\InvalidPopTimeoutException;
@@ -14,6 +15,7 @@ use Kinetis\Queue\Exception\InvalidQueueNameException;
 use Kinetis\Queue\Exception\MalformedQueuedJobDataException;
 use Kinetis\QueueSql\SqlQueue;
 use Kinetis\QueueSql\Tests\Fixtures\RecordingJob;
+use Kinetis\QueueSql\Tests\Fixtures\RecordingSqlLink;
 use InvalidArgumentException;
 use LogicException;
 use PHPUnit\Framework\TestCase;
@@ -386,5 +388,68 @@ final class SqlQueueTest extends TestCase
             'attempts' => 0,
             'metadata' => null,
         ]);
+    }
+
+    /**
+     * A worker whose job has outrun the visibility timeout still owns
+     * its row and still has a settlement to make, so clear() must not
+     * read that timeout the way size() and pop() do. The predicate is
+     * the proof: `reserved_at IS NULL` alone, with the queue name as the
+     * only bound parameter, so no expiry cutoff can widen it.
+     */
+    public function test_clear_preserves_every_reserved_row_even_past_the_visibility_timeout(): void
+    {
+        $link = new RecordingSqlLink();
+        $queue = new SqlQueue($link, visibilityTimeoutSeconds: 30);
+
+        $queue->clear('default');
+
+        self::assertCount(1, $link->executed);
+        [$sql, $params] = $link->executed[0];
+
+        self::assertStringContainsString('DELETE FROM', $sql);
+        self::assertStringContainsString('reserved_at IS NULL', $sql);
+        self::assertStringNotContainsString('reserved_at <=', $sql);
+        self::assertSame(['default'], $params);
+    }
+
+    /**
+     * The counterpart: the same instance, the same timeout, and size()
+     * does count an expired reservation — so the difference above is
+     * clear()'s own rule rather than the timeout going unread.
+     */
+    public function test_size_still_counts_a_reservation_past_the_visibility_timeout(): void
+    {
+        $link = new RecordingSqlLink();
+        $queue = new SqlQueue($link, visibilityTimeoutSeconds: 30);
+
+        $queue->size('default');
+
+        self::assertCount(1, $link->executed);
+        [$sql, $params] = $link->executed[0];
+
+        self::assertStringContainsString('reserved_at <=', $sql);
+        self::assertCount(2, $params);
+        self::assertSame('default', $params[0]);
+    }
+
+    public function test_the_backend_is_usable_through_the_clear_capability_type(): void
+    {
+        $queue = new SqlQueue($this->neverTouchedLink());
+
+        self::assertInstanceOf(ClearableQueueInterface::class, $queue);
+
+        // Called through the capability type, not the concrete class: a
+        // backend that stopped declaring ClearableQueueInterface fails
+        // here as a TypeError instead of passing quietly. The queue-name
+        // check still throws before the database is touched.
+        $this->expectException(InvalidQueueNameException::class);
+        self::clearThrough($queue, '');
+    }
+
+    /** Typed as the capability, which is the whole point of the test above. */
+    private static function clearThrough(ClearableQueueInterface $queue, string $name): int
+    {
+        return $queue->clear($name);
     }
 }
