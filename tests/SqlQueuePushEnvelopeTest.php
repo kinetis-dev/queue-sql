@@ -12,17 +12,12 @@ use Kinetis\QueueSql\Tests\Fixtures\RichPayloadJob;
 use PHPUnit\Framework\TestCase;
 
 /**
- * The real mechanism push()'s INSERT relies on: a
- * JobSerializer::serialize()-normalized payload survives push()'s own
- * json_encode() call (JSON_PRESERVE_ZERO_FRACTION included) with every
- * value's exact type intact — a float most notably, since without that
- * flag an integral-valued float silently round-trips back as an int.
- * RecordingSqlLink (shared with SqlQueuePushTelemetryTest) captures the
- * real INSERT's params without a live database — push() never reads the
- * row back, so nothing beyond capturing the bound params is needed
- * here. Still deliberately not proving pop()'s
- * own decode side, or reserveNext()'s query correctness — that stays
- * real-backend-only, per SqlQueueTest's own docblock.
+ * push()'s INSERT carries a JobSerializer::serialize() payload through
+ * json_encode() with every value's type intact — a float above all,
+ * since without JSON_PRESERVE_ZERO_FRACTION an integral-valued float
+ * round-trips back as an int. RecordingSqlLink captures the bound
+ * params without a live database. pop()'s decode side and
+ * reserveNext()'s query stay real-backend-only; see SqlQueueTest.
  */
 final class SqlQueuePushEnvelopeTest extends TestCase
 {
@@ -45,22 +40,14 @@ final class SqlQueuePushEnvelopeTest extends TestCase
 
         self::assertIsFloat($decoded['ratio']);
         self::assertSame(4.0, $decoded['ratio']);
-        self::assertSame(
-            [['$kinetisWireType' => 'map', 'entries' => ['id' => 1, 'tags' => ['a', 'b']]]],
-            $decoded['items'],
-        );
-        self::assertSame(
-            ['$kinetisWireType' => 'enum', 'class' => Priority::class, 'value' => 'high'],
-            $decoded['priority'],
-        );
+        self::assertSame([['id' => 1, 'tags' => ['a', 'b']]], $decoded['items']);
+        self::assertSame(Priority::High->value, $decoded['priority']);
     }
 
     /**
-     * The same check against the shared serialize() → json_encode() →
-     * json_decode() → JobSerializer::deserialize()/restore() path,
-     * confirming the exact bytes push() actually sent reconstruct back
-     * into a real, type-correct object — not just a plausible-looking
-     * array.
+     * The bytes push() sent reconstruct into a type-correct object
+     * through serialize() → json_encode() → json_decode() →
+     * deserializeJob(), not merely a plausible-looking array.
      */
     public function test_the_encoded_args_reconstruct_into_an_equivalent_job(): void
     {

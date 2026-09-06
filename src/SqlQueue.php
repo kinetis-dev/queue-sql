@@ -9,8 +9,10 @@ use Kinetis\Persistence\Contract\SqlLink;
 use Kinetis\Async\Timer;
 use Kinetis\Persistence\TransactionGuard;
 use Kinetis\Queue\ClearableQueueInterface;
+use Kinetis\Queue\Exception\StaleJobHandleException;
 use Kinetis\Queue\Job;
 use Kinetis\Queue\JobSerializer;
+use Kinetis\Queue\JobSettlement;
 use Kinetis\Queue\QueueContract;
 use Kinetis\Queue\QueuedJob;
 use Psr\Log\NullLogger;
@@ -18,86 +20,52 @@ use function Kinetis\Async\concurrently;
 use Throwable;
 
 /**
- * Typed against the generic Kinetis\Persistence\Contract\SqlLink, not
- * MysqlLink|PostgresLink —
- * the same reasoning SqlMigrationRepository already uses: `SELECT ...
- * FOR UPDATE SKIP LOCKED` is standard SQL supported identically by both
- * MySQL 8+ and Postgres 9.5+, so there's no dialect to isolate — including
- * the priority-ordering CASE expression below, which is standard SQL too
- * (not MySQL's own FIELD(), which Postgres has no equivalent for).
+ * Typed against the generic Kinetis\Persistence\Contract\SqlLink rather
+ * than MysqlLink|PostgresLink: `SELECT ... FOR UPDATE SKIP LOCKED` and the
+ * priority-ordering CASE expression below are standard SQL that MySQL 8+
+ * and Postgres 9.5+ support identically, so there is no dialect to
+ * isolate.
  *
  * Requires the `kinetis_queue_jobs` table — see
- * resources/migrations/create_kinetis_queue_jobs_table.{mysql,pgsql}.php.stub,
- * ready-to-copy Kinetis\Migrations migration files (two, not one: the
- * auto-incrementing primary key syntax itself isn't portable between
- * MySQL and Postgres, so — matching migrations being raw SQL by design,
- * with no DDL abstraction — there's no single shared stub), not
- * auto-created by this class the way SqlMigrationRepository auto-creates
- * its own tiny bookkeeping table. That table is a fixed shape that will
- * basically never change; a queue jobs table is real application data —
- * indexed, may need tuning — better managed as an explicit, versioned
- * migration than created implicitly as a side effect of normal runtime
- * operation.
+ * resources/migrations/create_kinetis_queue_jobs_table.{mysql,pgsql}.php.stub.
+ * Two stubs, not one, because auto-incrementing primary key syntax is not
+ * portable and migrations are raw SQL by design. The table is application
+ * data that may need indexing and tuning, so it belongs in an explicit
+ * migration rather than being created as a side effect of runtime.
  *
- * A fresh TransactionGuard is constructed per pop() call rather than
- * injected and reused — this class is registered once on AppScope and
- * lives for the worker's entire lifetime, but TransactionGuard's own
- * `$open` bookkeeping array is only ever cleared by rollbackDangling(),
- * which nothing here ever calls (every transaction this class opens
- * always closes within the same method call). Reusing one shared
- * instance across a worker processing millions of jobs over its lifetime
- * would grow that array forever; a throwaway instance per call has
- * nothing to leak.
+ * A fresh TransactionGuard is constructed per pop() call. This class lives
+ * for the worker's whole lifetime, and TransactionGuard's `$open`
+ * bookkeeping array is only cleared by rollbackDangling(), which nothing
+ * here calls — every transaction opened here closes in the same method. A
+ * throwaway instance has nothing to leak.
  *
- * No native "block until a row appears" primitive exists in SQL, unlike
- * Redis's BLPOP, so pop()'s blocking contract is implemented as a poll
- * loop instead, suspended between attempts via Kinetis\Async\Timer::delay()
- * rather than a real sleep() — the caller can't tell polling is
- * happening underneath. See QueueInterface's own docblock for the full
- * cross-backend pop() contract this satisfies (validated the same way
- * every other backend does, via Kinetis\Queue\QueueContract), and why
- * this class deliberately does not delegate to
- * Kinetis\Queue\Support\PopSweep the way RedisQueue/SqsQueue/RabbitMqQueue
- * do: reserveNext()'s own single, priority-ordered SQL query already
- * checks every queue as one atomic operation, which already gives the
- * "immediate, priority-ordered sweep before any wait" property PopSweep
- * exists to add for a backend that has to check queues one at a time —
- * there's no per-queue loop here for that class to coordinate. The
- * poll interval between reserveNext() attempts is bounded by whatever's
- * actually left of the deadline, the same "do not overshoot materially"
- * precision PopSweep applies elsewhere.
+ * SQL has no "block until a row appears" primitive, so pop()'s blocking
+ * contract is a poll loop suspended through Kinetis\Async\Timer::delay()
+ * rather than a real sleep. reserveNext()'s single priority-ordered query
+ * already checks every queue atomically, so there is no per-queue sweep to
+ * sequence. See QueueInterface for the cross-backend pop() contract.
  *
- * `max_attempts` is set once at push() from that call's own $maxAttempts
- * argument (SQL NULL meaning "defer to the worker's own default" — see
- * QueueWorker) and never changes afterward; both it and `attempts` are
- * read back on every pop() into QueuedJob, so a caller can decide between
- * release() and fail() without querying the table directly.
+ * `max_attempts` is set once at push() (SQL NULL meaning "defer to the
+ * worker's default") and never changes; it and `attempts` are read back on
+ * every pop(), so a caller can choose between release() and fail() without
+ * querying the table.
  *
- * $visibilityTimeoutSeconds closes a real gap: without it, a worker
- * that pops a job and then crashes
- * before ack()/release() runs leaves that row permanently stranded, with
- * `reserved_at` set forever and no other worker able to reclaim it —
- * `null` (the default) preserves that exact pre-existing behavior
- * unchanged. Passing a real value makes reserveNext()'s own query also
- * match a row whose `reserved_at` is older than `now - $timeout`,
- * treating it as available again — the standard "visibility timeout"
- * pattern SQS's own ReceiveMessage/VisibilityTimeout already uses.
- * Reclaiming a stale row increments `attempts` the same way an explicit
- * release() call already does (not merely re-reading the same value on
- * every crash-loop iteration), so `maxAttempts` still eventually gives up
- * on a job whose worker keeps crashing rather than retrying it forever
- * with no cap; a genuinely fresh (never-reserved) row's own first
- * reservation is unaffected, leaving `attempts` untouched until an
- * actual release() call.
+ * $visibilityTimeoutSeconds decides what happens to a row whose worker
+ * crashed between pop() and settlement. `null` leaves it reserved forever.
+ * A real value makes reserveNext() also match a row whose `reserved_at` is
+ * older than `now - $timeout` and increments `attempts` on reclaim, so
+ * `maxAttempts` still gives up on a job whose worker keeps crashing.
+ * `reserved_at` is written and compared against this process's own
+ * `time()`, not the database's clock, so skew between workers shifts when
+ * a reservation looks expired.
  *
- * A reclaimed row makes the delivery it was taken from obsolete while
- * that worker may still be running: ack(), release() and fail() all
- * address the row by id alone and report nothing when the row's current
- * reservation is not the caller's, so a settlement arriving after the
- * reclaim lands on whichever delivery holds the row. QueuedJob's own
- * docblock states the delivery-receipt contract this leaves open, and
- * $visibilityTimeoutSeconds null keeps a row reserved indefinitely
- * rather than reclaiming it at all.
+ * A reclaim makes the earlier delivery obsolete while its worker may
+ * still be running, so every reservation and reclaim writes a fresh
+ * random `reserved_token` under the row lock and pop() hands it back on
+ * QueuedJob::$handle as a Reservation. ack(), release() and fail() match
+ * on the row id *and* that token, so the earlier worker's late settlement
+ * finds no row and raises Exception\StaleJobHandleException instead of
+ * settling the reservation somebody else now holds.
  */
 final class SqlQueue implements ClearableQueueInterface
 {
@@ -174,22 +142,14 @@ final class SqlQueue implements ClearableQueueInterface
             return null;
         }
 
-        // The poll loop below suspends between attempts via Timer::delay(),
-        // which does a raw Fiber::suspend() — it requires an existing Fiber
-        // to suspend, unlike an amphp call (TransactionGuard's own queries
-        // included), which tolerates being awaited from plain top-level
-        // code. concurrently() (its single-task form here) gives the loop
-        // its own short-lived Fiber for exactly the duration of one pop()
-        // call, so pop() is safely callable from anywhere — a plain script,
-        // QueueWorker's loop — without the caller needing to know or care
-        // that a Fiber is involved underneath. Scoped tightly around just
-        // the loop, not the caller's surrounding job-invocation code, so a
-        // job's own handle() is free to call concurrently() itself
-        // afterwards without hitting Revolt's "event loop is already
-        // running" reentrancy error — nesting a second concurrently() call
-        // *inside* this one's still-running loop would still hit that
-        // error, the same limitation this class's own FOR UPDATE SKIP
-        // LOCKED concurrency has.
+        // Timer::delay() does a raw Fiber::suspend() and needs an
+        // existing Fiber, unlike an amphp call. concurrently()'s
+        // single-task form gives the poll loop its own Fiber for the
+        // duration of this call, so pop() is callable from a plain script
+        // as well as from QueueWorker's loop. It is scoped to the loop
+        // alone so a job's handle() can call concurrently() itself
+        // afterwards; nesting one inside this still-running loop would
+        // still hit Revolt's reentrancy error.
         return concurrently([fn (): ?QueuedJob => $this->pollUntilFoundOrTimedOut($timeoutSeconds, $queues)])[0];
     }
 
@@ -204,10 +164,15 @@ final class SqlQueue implements ClearableQueueInterface
             $row = $this->reserveNext($queues);
 
             if ($row !== null) {
+                // reserveNext() wrote this token itself, under the row
+                // lock; it is this delivery's half of the receipt rather
+                // than stored data the decode step has to validate.
+                $reservation = new Reservation($row['id'], (string) $row['reserved_token']);
+
                 return QueueContract::settleIfMalformed(
                     (string) $row['queue'],
-                    fn (): QueuedJob => self::rowToQueuedJob($row),
-                    fn () => $this->deleteRow($row['id']),
+                    fn (): QueuedJob => self::rowToQueuedJob($row, $reservation),
+                    fn () => $this->settle(JobSettlement::Fail, (string) $row['queue'], $reservation),
                 );
             }
 
@@ -217,13 +182,8 @@ final class SqlQueue implements ClearableQueueInterface
                 continue;
             }
 
-            // Bounded by whatever's actually left of the deadline, not
-            // always the full POLL_INTERVAL_SECONDS — the same "do not
-            // overshoot materially" precision Kinetis\Queue\Support\PopSweep
-            // applies for the backends that delegate to it directly (see
-            // this class's own docblock for why SqlQueue's single
-            // combined-priority-query design doesn't need that class
-            // itself).
+            // Bounded by what is left of the deadline rather than always
+            // the full interval, so pop() does not overshoot materially.
             $remaining = $deadline - microtime(true);
 
             if ($remaining <= 0.0) {
@@ -235,65 +195,47 @@ final class SqlQueue implements ClearableQueueInterface
     }
 
     /**
-     * Extracted out of pollUntilFoundOrTimedOut() specifically so it's
-     * independently testable with a hand-built row array, no real
-     * database needed — the same reflectable-decode shape RedisQueue's
-     * own decodeQueuedJob() already has. Every field is read through one
-     * of QueueContract's own coercion helpers rather than trusted at a
-     * PHPStan-asserted @var shape — many database drivers return every
-     * column value as a string regardless of the SQL column's own type,
-     * a NULL column reads back as PHP null, and the row itself could have
-     * been populated some other way entirely; $row['class'] gets a real
-     * non-empty-string check it never had before, `args`/`metadata` are
-     * decoded through the same JSON-array coercion RedisQueue's own
-     * whole-payload decode uses (just per-column here, rather than one
-     * shared envelope) — `args` specifically goes one step further than
-     * coerceStoredJsonArray() alone, through coerceStoredArgs() too,
-     * since a JSON *list* column value ('["value"]', no object keys at
-     * all) would otherwise pass a bare is_array() check cleanly despite
-     * being a shape no real push() ever writes (see that method's own
-     * docblock for the concrete, incidental TypeError it would otherwise
-     * cause much later, deep inside job reconstruction) — metadata's own
-     * present-but-not-a-string case is deliberately still passed to
-     * coerceStoredMetadata() rather than
-     * pre-filtered to null, so a corrupted non-string column value is
-     * genuinely rejected instead of silently read as "no metadata" —
-     * and $row['attempts'] specifically goes through
-     * coerceStoredCompletedAttempts(), not the plain coerceStoredInteger()
-     * $row['max_attempts'] uses — this stored value is the
-     * completed-attempts count (0-indexed) that gets a real `+ 1` right
-     * below, and that method is what keeps a stored PHP_INT_MAX from
-     * silently overflowing that addition into a float, and also rejects
-     * a negative stored count outright. max_attempts is checked for
-     * *presence* first — QueueContract::assertFieldPresent() — since this
-     * class's own fixed table schema always selects that column, even
-     * when its own value is a genuine SQL NULL; only a genuinely missing
-     * key (a hand-built row, a schema drift) is a sign of corruption,
-     * which a plain array read could never distinguish from a present,
-     * legitimately-NULL column. Every failure here is caught by this
-     * class's own pollUntilFoundOrTimedOut() — see
-     * QueueContract::settleIfMalformed() — so a malformed row settles the
-     * already-reserved job rather than crashing the worker.
+     * Takes a raw row rather than reading the result set, so it is
+     * testable against a hand-built array with no database.
+     *
+     * Every field goes through a QueueContract decode helper. Many drivers
+     * return every column as a string whatever the SQL type, a NULL column
+     * reads back as PHP null, and the row could have been written by
+     * something other than this class. `args` goes through storedArgs() on
+     * top of storedJsonArray(), since a JSON list column would pass a bare
+     * is_array() check despite being a shape no push() writes. `attempts`
+     * carries a PHP_INT_MAX - 1 ceiling so the `+ 1` below cannot overflow
+     * into a float. `max_attempts` is checked for presence first: this
+     * class's schema always selects the column, so only a missing key is
+     * corruption, which a plain read cannot tell apart from
+     * a legitimate SQL NULL. Failures are caught by
+     * pollUntilFoundOrTimedOut() through
+     * QueueContract::settleIfMalformed(), so a malformed row is settled
+     * rather than crashing the worker.
+     *
+     * $reservation comes from reserveNext(), not from the row: it names
+     * the delivery this call is producing, which is what ack()/release()/
+     * fail() are later matched against.
      *
      * @param array<string, mixed> $row
      */
-    private static function rowToQueuedJob(array $row): QueuedJob
+    private static function rowToQueuedJob(array $row, Reservation $reservation): QueuedJob
     {
-        $class = QueueContract::coerceStoredClass($row['class'] ?? null);
-        $args = QueueContract::coerceStoredArgs(
-            QueueContract::coerceStoredJsonArray((string) ($row['args'] ?? ''), 'args'),
+        $class = QueueContract::storedClass($row['class'] ?? null);
+        $args = QueueContract::storedArgs(
+            QueueContract::storedJsonArray((string) ($row['args'] ?? ''), 'args'),
         );
-        $metadata = QueueContract::coerceStoredMetadata($row['metadata'] ?? null);
+        $metadata = QueueContract::storedMetadata($row['metadata'] ?? null);
 
         QueueContract::assertFieldPresent($row, 'max_attempts');
-        $maxAttempts = QueueContract::coerceStoredMaxAttempts($row['max_attempts'], 'max_attempts');
+        $maxAttempts = QueueContract::storedNullableInt($row['max_attempts'], 'max_attempts', 0);
 
         return new QueuedJob(
             $class,
             $args,
-            handle: $row['id'],
+            handle: $reservation,
             queue: (string) $row['queue'],
-            attempts: QueueContract::coerceStoredCompletedAttempts($row['attempts'] ?? null, 'attempts') + 1,
+            attempts: QueueContract::storedInt($row['attempts'] ?? null, 'attempts', 0, PHP_INT_MAX - 1) + 1,
             maxAttempts: $maxAttempts,
             metadata: $metadata,
         );
@@ -302,34 +244,76 @@ final class SqlQueue implements ClearableQueueInterface
     #[\Override]
     public function ack(QueuedJob $job): void
     {
-        $this->deleteRow($job->handle);
+        $this->settle(JobSettlement::Ack, $job->queue, self::receipt($job));
     }
 
+    /**
+     * Clears the reservation and credits the attempt for this delivery
+     * only. The token predicate is what keeps a late release() from
+     * unreserving a row another worker is actively running and adding an
+     * attempt that worker never made.
+     */
     #[\Override]
     public function release(QueuedJob $job): void
     {
-        $this->db->execute(
-            self::UPDATE_TABLE . ' SET reserved_at = NULL, attempts = attempts + 1 WHERE id = ?',
-            [$job->handle],
-        );
+        $reservation = self::receipt($job);
+
+        self::assertSettled(JobSettlement::Release, $job->queue, $this->db->execute(
+            self::UPDATE_TABLE . ' SET reserved_at = NULL, reserved_token = NULL, attempts = attempts + 1'
+            . ' WHERE id = ? AND reserved_token = ?',
+            [$reservation->id, $reservation->token],
+        )->getRowCount());
     }
 
     #[\Override]
     public function fail(QueuedJob $job): void
     {
-        $this->deleteRow($job->handle);
+        $this->settle(JobSettlement::Fail, $job->queue, self::receipt($job));
     }
 
     /**
-     * Shared by ack()/fail() (a real QueuedJob's own handle) and the
+     * Shared by ack()/fail() (a real QueuedJob's own receipt) and the
      * malformed-row settlement path in pollUntilFoundOrTimedOut() (the
-     * raw row a decode failure was caught for, with no QueuedJob to read
-     * a handle off of) — the same DELETE either way, just reached from
-     * two different starting shapes.
+     * receipt reserveNext() just wrote for the row a decode failure was
+     * caught for) — the same fenced DELETE either way, just reached from
+     * two different starting shapes. The malformed path is fenced like
+     * any other: a reclaim between reserving the row and failing to
+     * decode it makes that row somebody else's, and deleting it would
+     * destroy their delivery.
      */
-    private function deleteRow(mixed $id): void
+    private function settle(JobSettlement $operation, string $queue, Reservation $reservation): void
     {
-        $this->db->execute(self::DELETE_TABLE . ' WHERE id = ?', [$id]);
+        self::assertSettled($operation, $queue, $this->db->execute(
+            self::DELETE_TABLE . ' WHERE id = ? AND reserved_token = ?',
+            [$reservation->id, $reservation->token],
+        )->getRowCount());
+    }
+
+    /**
+     * A settlement matches on the primary key, so it affects exactly one
+     * row or none at all. None means the delivery is over — settled
+     * through another call, or reclaimed once its reservation expired —
+     * and nothing was written. Anything other than 1, a driver reporting
+     * no count included, is that same "not this delivery's row" answer.
+     */
+    private static function assertSettled(JobSettlement $operation, string $queue, ?int $affected): void
+    {
+        if ($affected !== 1) {
+            throw StaleJobHandleException::forSettlement($operation, $queue);
+        }
+    }
+
+    /**
+     * pop() is the only producer of a handle this backend accepts, so the
+     * return type is the check: a QueuedJob from somewhere else fails
+     * here rather than reaching a statement with an unusable receipt.
+     */
+    private static function receipt(QueuedJob $job): Reservation
+    {
+        /** @var Reservation $reservation */
+        $reservation = $job->handle;
+
+        return $reservation;
     }
 
     /**
@@ -430,17 +414,14 @@ final class SqlQueue implements ClearableQueueInterface
         $params = [...$params, ...$queues];
 
         /**
-         * @psalm-suppress NoValue Psalm's template inference for
-         *     TransactionGuard::transaction()'s generic T, combined with
-         *     the SqlLink/SqlTransaction contracts,
-         *     collapses to an impossible type here for a closure with two
-         *     return points (null and array) — confirmed not reproducible
-         *     in a minimal, simplified standalone repro using plain,
-         *     non-Amp generic types, so the trigger is specific to the
-         *     real amphp/sql template shapes, not this method's own logic.
-         *     reserveNext()'s actual behavior (returning the row or null)
-         *     is independently verified against real MySQL/MariaDB
-         *     containers — see tests-integration/ in this package.
+         * @psalm-suppress NoValue Psalm's inference for
+         *     TransactionGuard::transaction()'s generic T against the
+         *     SqlLink/SqlTransaction contracts collapses to an impossible
+         *     type for a closure with two return points (null and array).
+         *     Not reproducible in a standalone repro with plain generic
+         *     types, so the trigger is the real amphp/sql template shapes.
+         *     reserveNext()'s behavior is verified against real
+         *     MySQL/MariaDB containers in tests-integration/.
          */
         return $guard->transaction($this->db, function ($tx) use ($sql, $params) {
             $row = $tx->execute($sql, $params)->fetchRow();
@@ -455,15 +436,27 @@ final class SqlQueue implements ClearableQueueInterface
             // that gets an attempts increment here and a fresh one doesn't.
             $isStaleReclaim = $row['reserved_at'] !== null;
 
+            // Written while the row lock is held, so the token a
+            // settlement is matched against can only be the newest
+            // reservation's. random_bytes() rather than a counter or a
+            // timestamp: two workers must never derive the same token,
+            // and neither may guess another's.
+            $token = bin2hex(random_bytes(16));
+
             if ($isStaleReclaim) {
                 $tx->execute(
-                    self::UPDATE_TABLE . ' SET reserved_at = ?, attempts = attempts + 1 WHERE id = ?',
-                    [self::now(), $row['id']],
+                    self::UPDATE_TABLE . ' SET reserved_at = ?, reserved_token = ?, attempts = attempts + 1 WHERE id = ?',
+                    [self::now(), $token, $row['id']],
                 );
                 $row['attempts'] = ((int) $row['attempts']) + 1;
             } else {
-                $tx->execute(self::UPDATE_TABLE . ' SET reserved_at = ? WHERE id = ?', [self::now(), $row['id']]);
+                $tx->execute(
+                    self::UPDATE_TABLE . ' SET reserved_at = ?, reserved_token = ? WHERE id = ?',
+                    [self::now(), $token, $row['id']],
+                );
             }
+
+            $row['reserved_token'] = $token;
 
             return $row;
         });

@@ -4,9 +4,9 @@ declare(strict_types=1);
 
 namespace Kinetis\QueueSql\Tests;
 
+use Kinetis\Queue\Exception\InvalidQueueArgumentException;
 use Kinetis\Instrumentation\NullTelemetry;
 use Kinetis\Instrumentation\Telemetry;
-use Kinetis\Queue\Exception\InvalidDelaySecondsException;
 use Kinetis\QueueSql\SqlQueue;
 use Kinetis\QueueSql\Tests\Fixtures\RecordingJob;
 use Kinetis\QueueSql\Tests\Fixtures\RecordingSqlLink;
@@ -77,7 +77,7 @@ final class SqlQueuePushTelemetryTest extends TestCase
         try {
             $queue->push(new RecordingJob('should never be persisted'), delaySeconds: -1);
             self::fail('Expected the negative delay to be rejected.');
-        } catch (InvalidDelaySecondsException) {
+        } catch (InvalidQueueArgumentException) {
             // expected
         }
 

@@ -7,12 +7,10 @@ namespace Kinetis\QueueSql\Tests;
 use Kinetis\Persistence\Contract\SqlLink;
 use Kinetis\Persistence\Contract\SqlResult;
 use Kinetis\Persistence\Contract\SqlTransaction;
+use Kinetis\Queue\Exception\InvalidQueueArgumentException;
 use Kinetis\Queue\ClearableQueueInterface;
-use Kinetis\Queue\Exception\InvalidDelaySecondsException;
-use Kinetis\Queue\Exception\InvalidMaxAttemptsException;
-use Kinetis\Queue\Exception\InvalidPopTimeoutException;
-use Kinetis\Queue\Exception\InvalidQueueNameException;
 use Kinetis\Queue\Exception\MalformedQueuedJobDataException;
+use Kinetis\QueueSql\Reservation;
 use Kinetis\QueueSql\SqlQueue;
 use Kinetis\QueueSql\Tests\Fixtures\RecordingJob;
 use Kinetis\QueueSql\Tests\Fixtures\RecordingSqlLink;
@@ -22,18 +20,27 @@ use PHPUnit\Framework\TestCase;
 use ReflectionMethod;
 
 /**
- * Constructor validation only — SqlQueue's own backend-specific
- * correctness (reservation, priority cycling, the real concurrent
- * SELECT ... FOR UPDATE SKIP LOCKED race) is deliberately never
- * unit-tested against a fake, matching this package's established "swap
- * the storage, not the whole system, and don't fake what a real backend
- * has to prove" discipline — real-backend verification lives in
- * tests-integration/ instead. This one check is pure PHP validation that
- * throws before $db is ever touched, so a real database has nothing to
- * prove that a fast unit test can't already prove faster.
+ * Input validation and row decoding — pure PHP that throws before $db is
+ * ever touched, or from a hand-built row, so a real database has nothing
+ * to prove here that a fast unit test can't prove faster. What a database
+ * does have to prove (priority cycling, the concurrent
+ * SELECT ... FOR UPDATE SKIP LOCKED race, the visibility-timeout reclaim)
+ * is left to tests-integration/, matching this package's "don't fake what
+ * a real backend has to prove" discipline. Settlement fencing is
+ * statement-level logic and lives in SqlQueueReservationFencingTest.
  */
 final class SqlQueueTest extends TestCase
 {
+    /**
+     * rowToQueuedJob() takes the reservation pop() made rather than
+     * reading a token off the row, so a decode test supplies one
+     * directly. Every test below fails before the receipt is used.
+     */
+    private static function someReservation(): Reservation
+    {
+        return new Reservation(1, 'ca6f0d1e9b4a47c8b0f2d3e4a5b6c7d8');
+    }
+
     private function neverTouchedLink(): SqlLink
     {
         return new class implements SqlLink {
@@ -104,7 +111,7 @@ final class SqlQueueTest extends TestCase
     {
         $queue = new SqlQueue($this->neverTouchedLink());
 
-        $this->expectException(InvalidQueueNameException::class);
+        $this->expectException(InvalidQueueArgumentException::class);
         $queue->push(new RecordingJob('should never be persisted'), queue: '');
     }
 
@@ -112,7 +119,7 @@ final class SqlQueueTest extends TestCase
     {
         $queue = new SqlQueue($this->neverTouchedLink());
 
-        $this->expectException(InvalidPopTimeoutException::class);
+        $this->expectException(InvalidQueueArgumentException::class);
         $queue->pop(-1);
     }
 
@@ -120,7 +127,7 @@ final class SqlQueueTest extends TestCase
     {
         $queue = new SqlQueue($this->neverTouchedLink());
 
-        $this->expectException(InvalidQueueNameException::class);
+        $this->expectException(InvalidQueueArgumentException::class);
         $queue->pop(0, ['default', 'default']);
     }
 
@@ -135,7 +142,7 @@ final class SqlQueueTest extends TestCase
     {
         $queue = new SqlQueue($this->neverTouchedLink());
 
-        $this->expectException(InvalidQueueNameException::class);
+        $this->expectException(InvalidQueueArgumentException::class);
         $queue->size('');
     }
 
@@ -143,7 +150,7 @@ final class SqlQueueTest extends TestCase
     {
         $queue = new SqlQueue($this->neverTouchedLink());
 
-        $this->expectException(InvalidQueueNameException::class);
+        $this->expectException(InvalidQueueArgumentException::class);
         $queue->size('has spaces');
     }
 
@@ -151,7 +158,7 @@ final class SqlQueueTest extends TestCase
     {
         $queue = new SqlQueue($this->neverTouchedLink());
 
-        $this->expectException(InvalidQueueNameException::class);
+        $this->expectException(InvalidQueueArgumentException::class);
         $queue->clear('');
     }
 
@@ -159,7 +166,7 @@ final class SqlQueueTest extends TestCase
     {
         $queue = new SqlQueue($this->neverTouchedLink());
 
-        $this->expectException(InvalidDelaySecondsException::class);
+        $this->expectException(InvalidQueueArgumentException::class);
         $queue->push(new RecordingJob('should never be persisted'), delaySeconds: -1);
     }
 
@@ -167,7 +174,7 @@ final class SqlQueueTest extends TestCase
     {
         $queue = new SqlQueue($this->neverTouchedLink());
 
-        $this->expectException(InvalidMaxAttemptsException::class);
+        $this->expectException(InvalidQueueArgumentException::class);
         $queue->push(new RecordingJob('should never be persisted'), maxAttempts: -1);
     }
 
@@ -176,8 +183,8 @@ final class SqlQueueTest extends TestCase
      * max_attempts value is actually caught — proven directly with a
      * hand-built row array (no real database needed, since this method
      * was extracted specifically to make that possible), so the wiring
-     * between it and QueueContract::coerceStoredInteger() is exercised
-     * too, not just coerceStoredInteger()'s own unit-level behavior.
+     * between it and QueueContract::storedInt() is exercised
+     * too, not just storedInt()'s own unit-level behavior.
      */
     public function test_row_to_queued_job_rejects_a_non_numeric_stored_attempts_value(): void
     {
@@ -193,7 +200,7 @@ final class SqlQueueTest extends TestCase
             'attempts' => 'garbage',
             'max_attempts' => null,
             'metadata' => null,
-        ]);
+        ], self::someReservation());
     }
 
     public function test_row_to_queued_job_rejects_a_non_numeric_stored_max_attempts_value(): void
@@ -210,27 +217,22 @@ final class SqlQueueTest extends TestCase
             'attempts' => 0,
             'max_attempts' => 'garbage',
             'metadata' => null,
-        ]);
+        ], self::someReservation());
     }
 
     /**
-     * The reviewer's own reported overflow gap, at the real decode level:
-     * a stored completed-attempts count of exactly PHP_INT_MAX is
-     * syntactically a perfectly valid integer — coerceStoredInteger()
-     * alone would accept it — but rowToQueuedJob()'s own `+ 1` would
-     * silently overflow it to a float, which would then fail QueuedJob's
-     * strictly-typed constructor with a confusing TypeError. This proves
-     * the real, wired decode path rejects it cleanly instead, via
-     * QueueContract::coerceStoredCompletedAttempts() — as the string many
-     * real database drivers actually return a column value as, not the
-     * native int form.
+     * A stored completed-attempts count of exactly PHP_INT_MAX is a
+     * valid integer, but rowToQueuedJob()'s `+ 1` would overflow it to a
+     * float and fail QueuedJob's typed constructor with a TypeError. The
+     * decode path rejects it as corrupted storage instead — in the
+     * string form many database drivers return a column as.
      */
     public function test_row_to_queued_job_rejects_a_stored_attempts_value_of_php_int_max(): void
     {
         $rowToQueuedJob = new ReflectionMethod(SqlQueue::class, 'rowToQueuedJob');
 
         $this->expectException(MalformedQueuedJobDataException::class);
-        $this->expectExceptionMessage('PHP_INT_MAX');
+        $this->expectExceptionMessage('"attempts"');
         $rowToQueuedJob->invoke(null, [
             'id' => 1,
             'class' => RecordingJob::class,
@@ -239,7 +241,7 @@ final class SqlQueueTest extends TestCase
             'attempts' => (string) PHP_INT_MAX,
             'max_attempts' => null,
             'metadata' => null,
-        ]);
+        ], self::someReservation());
     }
 
     public function test_row_to_queued_job_rejects_an_args_column_that_is_not_valid_json(): void
@@ -256,7 +258,7 @@ final class SqlQueueTest extends TestCase
             'attempts' => 0,
             'max_attempts' => null,
             'metadata' => null,
-        ]);
+        ], self::someReservation());
     }
 
     public function test_row_to_queued_job_rejects_an_args_column_that_is_not_a_json_object(): void
@@ -273,13 +275,13 @@ final class SqlQueueTest extends TestCase
             'attempts' => 0,
             'max_attempts' => null,
             'metadata' => null,
-        ]);
+        ], self::someReservation());
     }
 
     /**
      * A JSON *list* args column value ('["value"]', no object keys) is a
      * real, distinct malformed shape from "not an object at all" above —
-     * coerceStoredJsonArray()'s own is_array() check would have accepted
+     * storedJsonArray()'s own is_array() check would have accepted
      * it. Confirming it throws MalformedQueuedJobDataException here, from
      * rowToQueuedJob() itself (the exact function
      * pollUntilFoundOrTimedOut() wraps in
@@ -301,7 +303,7 @@ final class SqlQueueTest extends TestCase
             'attempts' => 0,
             'max_attempts' => null,
             'metadata' => null,
-        ]);
+        ], self::someReservation());
     }
 
     public function test_row_to_queued_job_rejects_a_missing_or_null_class_column(): void
@@ -318,7 +320,7 @@ final class SqlQueueTest extends TestCase
             'attempts' => 0,
             'max_attempts' => null,
             'metadata' => null,
-        ]);
+        ], self::someReservation());
     }
 
     public function test_row_to_queued_job_rejects_a_metadata_column_with_a_non_string_key(): void
@@ -335,7 +337,7 @@ final class SqlQueueTest extends TestCase
             'attempts' => 0,
             'max_attempts' => null,
             'metadata' => '["not","a","map"]',
-        ]);
+        ], self::someReservation());
     }
 
     /**
@@ -362,7 +364,7 @@ final class SqlQueueTest extends TestCase
             'attempts' => 0,
             'max_attempts' => null,
             'metadata' => 12345,
-        ]);
+        ], self::someReservation());
     }
 
     /**
@@ -387,7 +389,7 @@ final class SqlQueueTest extends TestCase
             'queue' => 'default',
             'attempts' => 0,
             'metadata' => null,
-        ]);
+        ], self::someReservation());
     }
 
     /**
@@ -443,7 +445,7 @@ final class SqlQueueTest extends TestCase
         // backend that stopped declaring ClearableQueueInterface fails
         // here as a TypeError instead of passing quietly. The queue-name
         // check still throws before the database is touched.
-        $this->expectException(InvalidQueueNameException::class);
+        $this->expectException(InvalidQueueArgumentException::class);
         self::clearThrough($queue, '');
     }
 

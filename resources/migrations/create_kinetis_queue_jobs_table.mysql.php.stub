@@ -13,7 +13,13 @@ use Kinetis\Migrations\Migration;
 //
 // AUTO_INCREMENT/UNSIGNED are MySQL-only syntax — see the .pgsql. sibling
 // stub for the Postgres equivalent; migrations are raw SQL by design, so
-// there is deliberately no shared, dialect-abstracted version of this file.
+// there is no shared, dialect-abstracted version of this file.
+//
+// `queue` and `reserved_token` are ascii_bin: MySQL's default collation
+// compares case-insensitively, and both columns are matched for exact
+// equality — a queue name the caller asked for, and the token fencing a
+// settlement to the reservation that produced it. Postgres compares
+// byte-exactly already.
 
 return new class implements Migration
 {
@@ -23,10 +29,11 @@ return new class implements Migration
             CREATE TABLE kinetis_queue_jobs (
                 id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
                 class VARCHAR(255) NOT NULL,
-                queue VARCHAR(255) NOT NULL DEFAULT 'default',
+                queue VARCHAR(255) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT 'default',
                 args TEXT NOT NULL,
                 available_at TIMESTAMP NOT NULL,
                 reserved_at TIMESTAMP NULL,
+                reserved_token VARCHAR(32) CHARACTER SET ascii COLLATE ascii_bin NULL,
                 attempts INT UNSIGNED NOT NULL DEFAULT 0,
                 max_attempts INT UNSIGNED NULL,
                 metadata TEXT NULL,

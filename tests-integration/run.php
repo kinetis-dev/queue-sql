@@ -3,21 +3,21 @@
 declare(strict_types=1);
 
 /**
- * Real-backend regression coverage for SqlQueue — it has no committed
- * PHPUnit test beyond constructor validation, by design: a mocked "was
- * this method called with X" test can't prove backend-specific
- * correctness (FOR UPDATE SKIP LOCKED, priority-queue cycling, the
- * visibility-timeout reclaim). This runs the same checks originally
- * verified by hand, on every CI push instead of once.
+ * Real-backend coverage for what SqlQueue's committed PHPUnit tests
+ * cannot prove against a fake: FOR UPDATE SKIP LOCKED, priority-queue
+ * cycling, the visibility-timeout reclaim, and that the server itself
+ * answers a settlement fenced to a superseded reservation with an
+ * affected-row count of zero.
  */
 
 require __DIR__ . '/../vendor/autoload.php';
 
 use Kinetis\Persistence\Contract\MysqlLink;
 use Kinetis\Persistence\Driver\MysqliAsyncClient;
-use Kinetis\Queue\Exception\InvalidPopTimeoutException;
-use Kinetis\Queue\Exception\InvalidQueueNameException;
+use Kinetis\Queue\Exception\InvalidQueueArgumentException;
 use Kinetis\Queue\Exception\MalformedJobSettledException;
+use Kinetis\Queue\Exception\StaleJobHandleException;
+use Kinetis\Queue\JobSettlement;
 use Kinetis\Queue\Job;
 use Kinetis\Queue\QueuedJob;
 use Kinetis\Queue\QueueInterface;
@@ -90,21 +90,21 @@ function runQueueChecks(string $backend, QueueInterface $queue): void
     try {
         $queue->pop(timeoutSeconds: -1);
         check("{$backend}: a negative timeout is rejected", false);
-    } catch (InvalidPopTimeoutException) {
+    } catch (InvalidQueueArgumentException) {
         check("{$backend}: a negative timeout is rejected", true);
     }
 
     try {
         $queue->pop(queues: ['default', '']);
         check("{$backend}: an empty queue name is rejected", false);
-    } catch (InvalidQueueNameException) {
+    } catch (InvalidQueueArgumentException) {
         check("{$backend}: an empty queue name is rejected", true);
     }
 
     try {
         $queue->pop(queues: ['default', 'high', 'default']);
         check("{$backend}: a duplicate queue name is rejected", false);
-    } catch (InvalidQueueNameException) {
+    } catch (InvalidQueueArgumentException) {
         check("{$backend}: a duplicate queue name is rejected", true);
     }
 
@@ -224,6 +224,80 @@ function runMalformedRowChecks(MysqlLink $mysql): void
     echo "\n";
 }
 
+/**
+ * A reclaim gives the row a new reserved_token, so the crashed worker's
+ * receipt names a reservation the server no longer holds. Every
+ * settlement matches on id plus token, so each of the three affects zero
+ * rows and raises StaleJobHandleException, leaving the reclaiming
+ * worker's delivery intact and settleable.
+ */
+function runReservationFencingChecks(MysqlLink $mysql): void
+{
+    echo "=== SqlQueue: reservation fencing ===\n";
+
+    foreach ([JobSettlement::Ack, JobSettlement::Release, JobSettlement::Fail] as $operation) {
+        $mysql->execute('DELETE FROM kinetis_queue_jobs');
+
+        $queue = new SqlQueue($mysql, visibilityTimeoutSeconds: 5);
+        $queue->push(new IntegrationTestJob('reclaimed-under-a-slow-worker'));
+
+        $crashed = $queue->pop(timeoutSeconds: 5);
+        check("SqlQueue: the first delivery is popped ({$operation->value})", $crashed !== null);
+        // Crash: never ack()/release(), and wait out the timeout.
+        sleep(7);
+        $reclaimed = $queue->pop(timeoutSeconds: 5);
+        check("SqlQueue: the row is reclaimed for a second delivery ({$operation->value})", $reclaimed !== null);
+
+        $stale = null;
+
+        try {
+            match ($operation) {
+                JobSettlement::Ack => $queue->ack($crashed),
+                JobSettlement::Release => $queue->release($crashed),
+                JobSettlement::Fail => $queue->fail($crashed),
+            };
+        } catch (StaleJobHandleException $e) {
+            $stale = $e;
+        }
+
+        check("SqlQueue: a stale {$operation->value}() raises StaleJobHandleException", $stale?->operation === $operation);
+
+        $row = $mysql->execute('SELECT attempts FROM kinetis_queue_jobs')->fetchRow();
+        check("SqlQueue: a stale {$operation->value}() wrote nothing", (int) ($row['attempts'] ?? -1) === 1);
+
+        $queue->ack($reclaimed);
+        $remaining = $mysql->execute('SELECT COUNT(*) AS c FROM kinetis_queue_jobs')->fetchRow();
+        check("SqlQueue: the reclaiming delivery still settles ({$operation->value})", (int) ($remaining['c'] ?? -1) === 0);
+    }
+
+    echo "\n";
+}
+
+/**
+ * MySQL's default collation compares case-insensitively; the queue column
+ * is ascii_bin so a named queue is matched byte for byte. Postgres
+ * compares that way already.
+ */
+function runQueueNameCaseChecks(MysqlLink $mysql): void
+{
+    echo "=== SqlQueue: byte-exact queue names ===\n";
+
+    $mysql->execute('DELETE FROM kinetis_queue_jobs');
+
+    $queue = new SqlQueue($mysql);
+    $queue->push(new IntegrationTestJob('lowercase-only'), queue: 'reports');
+
+    check('SqlQueue: a differently-cased queue name pops nothing', $queue->pop(timeoutSeconds: 1, queues: ['Reports']) === null);
+    check('SqlQueue: a differently-cased queue name counts nothing', $queue->size('Reports') === 0);
+    check('SqlQueue: the exact queue name still counts the job', $queue->size('reports') === 1);
+
+    $popped = $queue->pop(timeoutSeconds: 5, queues: ['reports']);
+    check('SqlQueue: the exact queue name pops the job', $popped !== null);
+    $queue->ack($popped);
+
+    echo "\n";
+}
+
 $mysql = new MysqliAsyncClient(
     getenv('MYSQL_HOST') ?: '127.0.0.1',
     getenv('MYSQL_USER') ?: 'testuser',
@@ -236,10 +310,11 @@ $mysql->execute(<<<'SQL'
     CREATE TABLE kinetis_queue_jobs (
         id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
         class VARCHAR(255) NOT NULL,
-        queue VARCHAR(255) NOT NULL DEFAULT 'default',
+        queue VARCHAR(255) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT 'default',
         args TEXT NOT NULL,
         available_at TIMESTAMP NOT NULL,
         reserved_at TIMESTAMP NULL,
+        reserved_token VARCHAR(32) CHARACTER SET ascii COLLATE ascii_bin NULL,
         attempts INT UNSIGNED NOT NULL DEFAULT 0,
         max_attempts INT UNSIGNED NULL,
         metadata TEXT NULL,
@@ -249,6 +324,8 @@ $mysql->execute(<<<'SQL'
     SQL);
 runQueueChecks('SqlQueue', new SqlQueue($mysql));
 runSqlQueueVisibilityTimeoutChecks($mysql);
+runReservationFencingChecks($mysql);
+runQueueNameCaseChecks($mysql);
 runMalformedRowChecks($mysql);
 
 echo "ALL CHECKS PASSED\n";

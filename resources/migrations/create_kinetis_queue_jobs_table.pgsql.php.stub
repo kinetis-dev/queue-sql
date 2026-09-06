@@ -13,10 +13,12 @@ use Kinetis\Migrations\Migration;
 //
 // BIGSERIAL is the Postgres equivalent of MySQL's BIGINT UNSIGNED
 // AUTO_INCREMENT — see the .mysql. sibling stub; migrations are raw SQL
-// by design, so there is deliberately no shared, dialect-abstracted
-// version of this file. Postgres has no UNSIGNED integer type at all,
-// and — unlike MySQL — has no inline INDEX clause inside CREATE TABLE;
-// an index needs its own separate CREATE INDEX statement.
+// by design, so there is no shared, dialect-abstracted version of this
+// file. Postgres has no UNSIGNED integer type at all, and — unlike
+// MySQL — has no inline INDEX clause inside CREATE TABLE; an index needs
+// its own separate CREATE INDEX statement. Its default collation already
+// compares `queue` and `reserved_token` byte-exactly, which the MySQL
+// stub has to ask for.
 
 return new class implements Migration
 {
@@ -30,6 +32,7 @@ return new class implements Migration
                 args TEXT NOT NULL,
                 available_at TIMESTAMP NOT NULL,
                 reserved_at TIMESTAMP NULL,
+                reserved_token VARCHAR(32) NULL,
                 attempts INT NOT NULL DEFAULT 0,
                 max_attempts INT NULL,
                 metadata TEXT NULL,
