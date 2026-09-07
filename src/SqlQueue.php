@@ -146,10 +146,7 @@ final class SqlQueue implements ClearableQueueInterface
         // existing Fiber, unlike an amphp call. concurrently()'s
         // single-task form gives the poll loop its own Fiber for the
         // duration of this call, so pop() is callable from a plain script
-        // as well as from QueueWorker's loop. It is scoped to the loop
-        // alone so a job's handle() can call concurrently() itself
-        // afterwards; nesting one inside this still-running loop would
-        // still hit Revolt's reentrancy error.
+        // as well as from QueueWorker's loop.
         return concurrently([fn (): ?QueuedJob => $this->pollUntilFoundOrTimedOut($timeoutSeconds, $queues)])[0];
     }
 
@@ -208,7 +205,12 @@ final class SqlQueue implements ClearableQueueInterface
      * into a float. `max_attempts` is checked for presence first: this
      * class's schema always selects the column, so only a missing key is
      * corruption, which a plain read cannot tell apart from
-     * a legitimate SQL NULL. Failures are caught by
+     * a legitimate SQL NULL. `queue` is the one field this backend reads
+     * back out of storage rather than taking from its caller, so it is
+     * decoded as well: reserveNext() matches it under the server's
+     * collation, and the shipped MySQL stub's `ascii_bin` pads on
+     * comparison, so a row whose stored name the queue-name grammar
+     * rejects can match a name that was asked for. Failures are caught by
      * pollUntilFoundOrTimedOut() through
      * QueueContract::settleIfMalformed(), so a malformed row is settled
      * rather than crashing the worker.
@@ -226,6 +228,7 @@ final class SqlQueue implements ClearableQueueInterface
             QueueContract::storedJsonArray((string) ($row['args'] ?? ''), 'args'),
         );
         $metadata = QueueContract::storedMetadata($row['metadata'] ?? null);
+        $queue = QueueContract::storedQueueName($row['queue'] ?? null);
 
         QueueContract::assertFieldPresent($row, 'max_attempts');
         $maxAttempts = QueueContract::storedNullableInt($row['max_attempts'], 'max_attempts', 0);
@@ -234,7 +237,7 @@ final class SqlQueue implements ClearableQueueInterface
             $class,
             $args,
             handle: $reservation,
-            queue: (string) $row['queue'],
+            queue: $queue,
             attempts: QueueContract::storedInt($row['attempts'] ?? null, 'attempts', 0, PHP_INT_MAX - 1) + 1,
             maxAttempts: $maxAttempts,
             metadata: $metadata,

@@ -187,6 +187,40 @@ final class SqlQueueReservationFencingTest extends TestCase
     }
 
     /**
+     * MySQL compares an `ascii_bin` VARCHAR with padding, so a row stored
+     * as `"default "` answers reserveNext()'s `queue IN (...)` for
+     * `default` even though the queue-name grammar rejects the value
+     * itself. Decoding the stored name is what keeps that row on the
+     * malformed path: the caller-facing InvalidQueueArgumentException
+     * QueuedJob's constructor would raise is outside what
+     * settleIfMalformed() catches, so it would escape pop() and leave the
+     * row for a visibility timeout to serve up again.
+     */
+    public function test_a_stored_queue_name_outside_the_grammar_is_settled_as_malformed(): void
+    {
+        $link = self::link(['queue' => 'default ']);
+        $queue = new SqlQueue($link);
+
+        $threw = null;
+
+        try {
+            $queue->pop();
+        } catch (MalformedJobSettledException $e) {
+            $threw = $e;
+        }
+
+        self::assertNotNull($threw);
+        self::assertNull($link->row, 'the poison row must be removed rather than left to be popped again');
+
+        [$sql, $params] = $link->executed[array_key_last($link->executed)];
+
+        self::assertStringContainsString('DELETE FROM', $sql);
+        self::assertStringContainsString('WHERE id = ? AND reserved_token = ?', $sql);
+        self::assertSame(7, $params[0]);
+        self::assertMatchesRegularExpression(self::TOKEN_PATTERN, (string) $params[1]);
+    }
+
+    /**
      * The cleanup is not exempt from the fence: a reclaim landing between
      * the reservation and the decode failure makes the row somebody
      * else's, and deleting it would destroy a live delivery. The stale
