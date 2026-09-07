@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Kinetis\QueueSql\Tests;
 
+use InvalidArgumentException;
 use Kinetis\Config\Config;
 use Kinetis\Config\Exception\MissingConfigException;
 use Kinetis\QueueSql\SqlQueue;
@@ -47,6 +48,36 @@ final class SqlQueueFactoryTest extends TestCase
 
         $this->expectException(MissingConfigException::class);
         $this->expectExceptionMessage('DB_PASSWORD');
+        SqlQueueFactory::fromConfig($config);
+    }
+
+    /**
+     * No setting means the finite default, not an indefinite
+     * reservation: a crashed worker's row is reclaimable out of the box.
+     */
+    public function test_an_absent_visibility_timeout_falls_back_to_the_finite_default(): void
+    {
+        $config = new Config([
+            'DB_CONNECTION' => 'mysql',
+            'DB_PASSWORD' => 'secret',
+        ]);
+
+        $queue = SqlQueueFactory::fromConfig($config);
+
+        $property = new ReflectionProperty(SqlQueue::class, 'visibilityTimeoutSeconds');
+        self::assertSame(300, $property->getValue($queue));
+    }
+
+    public function test_a_non_positive_visibility_timeout_is_rejected(): void
+    {
+        $config = new Config([
+            'DB_CONNECTION' => 'mysql',
+            'DB_PASSWORD' => 'secret',
+            'QUEUE_VISIBILITY_TIMEOUT_SECONDS' => '0',
+        ]);
+
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('QUEUE_VISIBILITY_TIMEOUT_SECONDS must be a positive number of seconds, got 0.');
         SqlQueueFactory::fromConfig($config);
     }
 

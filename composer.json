@@ -1,6 +1,6 @@
 {
     "name": "kinetis/queue-sql",
-    "description": "A SQL-backed (MySQL/Postgres) queue implementation for kinetis/queue's QueueInterface — SELECT ... FOR UPDATE SKIP LOCKED for exactly-once delivery, an optional visibility timeout for a crashed worker's reserved job.",
+    "description": "A SQL-backed (MySQL/Postgres) queue implementation for kinetis/queue's QueueInterface — SELECT ... FOR UPDATE SKIP LOCKED for atomic reservation, token-fenced settlement, and a finite visibility timeout that redelivers a crashed worker's job.",
     "type": "library",
     "license": "MIT",
     "authors": [

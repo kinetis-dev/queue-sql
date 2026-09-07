@@ -50,14 +50,15 @@ use Throwable;
  * every pop(), so a caller can choose between release() and fail() without
  * querying the table.
  *
- * $visibilityTimeoutSeconds decides what happens to a row whose worker
- * crashed between pop() and settlement. `null` leaves it reserved forever.
- * A real value makes reserveNext() also match a row whose `reserved_at` is
- * older than `now - $timeout` and increments `attempts` on reclaim, so
- * `maxAttempts` still gives up on a job whose worker keeps crashing.
- * `reserved_at` is written and compared against this process's own
- * `time()`, not the database's clock, so skew between workers shifts when
- * a reservation looks expired.
+ * $visibilityTimeoutSeconds is the finite reclaim window for a row whose
+ * worker crashed between pop() and settlement: reserveNext() also matches
+ * a row whose `reserved_at` is older than `now - $timeout` and increments
+ * `attempts` on reclaim. The window is not renewed, so a job still running
+ * when it expires can execute alongside its replacement; size the window
+ * above normal job duration and keep handlers idempotent. `reserved_at` is
+ * written and compared against this process's own `time()`, not the
+ * database's clock, so skew between workers shifts when a reservation
+ * looks expired.
  *
  * A reclaim makes the earlier delivery obsolete while its worker may
  * still be running, so every reservation and reclaim writes a fresh
@@ -82,17 +83,16 @@ final class SqlQueue implements ClearableQueueInterface
      */
     public function __construct(
         private readonly SqlLink $db,
-        private readonly ?int $visibilityTimeoutSeconds = null,
+        private readonly int $visibilityTimeoutSeconds = 300,
     ) {
-        // null means "no timeout" and is the only value with that
-        // meaning — 0 or a negative value would make reserveNext()'s own
-        // query match a row reserved an instant ago (0) or one reserved
-        // in the future relative to now (negative), letting a second
-        // worker reclaim an actively-held reservation immediately rather
-        // than after it genuinely goes stale.
-        if ($visibilityTimeoutSeconds !== null && $visibilityTimeoutSeconds < 1) {
+        // 0 or a negative value would make reserveNext()'s own query
+        // match a row reserved an instant ago (0) or one reserved in the
+        // future relative to now (negative), letting a second worker
+        // reclaim an actively-held reservation immediately rather than
+        // after it goes stale.
+        if ($visibilityTimeoutSeconds < 1) {
             throw new \InvalidArgumentException(
-                "SqlQueue needs a visibilityTimeoutSeconds of at least 1 (or null for no timeout), got {$visibilityTimeoutSeconds}.",
+                "SqlQueue needs a visibilityTimeoutSeconds of at least 1, got {$visibilityTimeoutSeconds}.",
             );
         }
     }
@@ -324,9 +324,8 @@ final class SqlQueue implements ClearableQueueInterface
      * inside its push() delay is outstanding work even though no worker
      * can pop it yet. Rows a worker holds (`reserved_at` set) belong to
      * that worker and are excluded — with the same expired-reservation
-     * carve-out pop() applies: under a visibility timeout, a reservation
-     * older than the timeout is reclaimable, so the job counts as
-     * waiting again.
+     * carve-out pop() applies: a reservation older than the visibility
+     * timeout is reclaimable, so the job counts as waiting again.
      */
     #[\Override]
     public function size(string $queue = 'default'): int
@@ -373,10 +372,6 @@ final class SqlQueue implements ClearableQueueInterface
     {
         QueueContract::assertValidQueueName($queue);
 
-        if ($this->visibilityTimeoutSeconds === null) {
-            return ['queue = ? AND reserved_at IS NULL', [$queue]];
-        }
-
         return [
             'queue = ? AND (reserved_at IS NULL OR reserved_at <= ?)',
             [$queue, self::formatTimestamp(time() - $this->visibilityTimeoutSeconds)],
@@ -399,22 +394,18 @@ final class SqlQueue implements ClearableQueueInterface
             array_keys($queues),
         ));
 
-        $reservedCondition = $this->visibilityTimeoutSeconds !== null
-            ? '(reserved_at IS NULL OR reserved_at <= ?)'
-            : 'reserved_at IS NULL';
-
         $sql = 'SELECT * FROM ' . self::TABLE
-            . " WHERE queue IN ({$inPlaceholders}) AND available_at <= ? AND {$reservedCondition}"
+            . " WHERE queue IN ({$inPlaceholders}) AND available_at <= ?"
+            . ' AND (reserved_at IS NULL OR reserved_at <= ?)'
             . " ORDER BY CASE queue {$casePlaceholders} ELSE " . count($queues) . ' END, id ASC'
             . ' LIMIT 1 FOR UPDATE SKIP LOCKED';
 
-        $params = [...$queues, self::now()];
-
-        if ($this->visibilityTimeoutSeconds !== null) {
-            $params[] = self::formatTimestamp(time() - $this->visibilityTimeoutSeconds);
-        }
-
-        $params = [...$params, ...$queues];
+        $params = [
+            ...$queues,
+            self::now(),
+            self::formatTimestamp(time() - $this->visibilityTimeoutSeconds),
+            ...$queues,
+        ];
 
         /**
          * @psalm-suppress NoValue Psalm's inference for

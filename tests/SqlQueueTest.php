@@ -70,13 +70,6 @@ final class SqlQueueTest extends TestCase
         };
     }
 
-    public function test_a_null_visibility_timeout_is_accepted(): void
-    {
-        $queue = new SqlQueue($this->neverTouchedLink(), visibilityTimeoutSeconds: null);
-
-        self::assertInstanceOf(SqlQueue::class, $queue);
-    }
-
     public function test_a_positive_visibility_timeout_is_accepted(): void
     {
         $queue = new SqlQueue($this->neverTouchedLink(), visibilityTimeoutSeconds: 30);
@@ -94,7 +87,7 @@ final class SqlQueueTest extends TestCase
     public function test_a_zero_visibility_timeout_is_rejected(): void
     {
         $this->expectException(InvalidArgumentException::class);
-        $this->expectExceptionMessage('visibilityTimeoutSeconds of at least 1 (or null for no timeout), got 0');
+        $this->expectExceptionMessage('visibilityTimeoutSeconds of at least 1, got 0');
 
         new SqlQueue($this->neverTouchedLink(), visibilityTimeoutSeconds: 0);
     }
@@ -102,7 +95,7 @@ final class SqlQueueTest extends TestCase
     public function test_a_negative_visibility_timeout_is_rejected(): void
     {
         $this->expectException(InvalidArgumentException::class);
-        $this->expectExceptionMessage('visibilityTimeoutSeconds of at least 1 (or null for no timeout), got -5');
+        $this->expectExceptionMessage('visibilityTimeoutSeconds of at least 1, got -5');
 
         new SqlQueue($this->neverTouchedLink(), visibilityTimeoutSeconds: -5);
     }
@@ -433,6 +426,24 @@ final class SqlQueueTest extends TestCase
         self::assertStringContainsString('reserved_at <=', $sql);
         self::assertCount(2, $params);
         self::assertSame('default', $params[0]);
+    }
+
+    /**
+     * The default reservation window is finite, so a queue constructed
+     * without one still offers a crashed worker's row back: size()'s
+     * predicate carries the expiry cutoff with no setting in play.
+     */
+    public function test_the_default_visibility_timeout_is_finite(): void
+    {
+        $link = new RecordingSqlLink();
+        $queue = new SqlQueue($link);
+
+        $queue->size('default');
+
+        [$sql, $params] = $link->executed[0];
+
+        self::assertStringContainsString('reserved_at <=', $sql);
+        self::assertCount(2, $params);
     }
 
     public function test_the_backend_is_usable_through_the_clear_capability_type(): void

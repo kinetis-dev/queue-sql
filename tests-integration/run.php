@@ -117,29 +117,14 @@ function runQueueChecks(string $backend, QueueInterface $queue): void
 }
 
 /**
- * §6.9 of the independent evaluation report: a crashed worker's reserved
- * row stayed stranded forever on SqlQueue, undisclosed. $visibilityTimeoutSeconds
- * closes it — this proves both halves: no timeout configured behaves
- * exactly as before (stranded forever), a real timeout reclaims the row
- * and correctly increments attempts (crediting the crashed attempt),
- * while a genuinely fresh row's first reservation stays unaffected.
+ * A reservation is finite: a row whose worker died is reclaimed once the
+ * visibility timeout passes, with the crashed attempt credited, while a
+ * reservation still inside its window stays that worker's and a fresh
+ * row's first reservation is unaffected.
  */
 function runSqlQueueVisibilityTimeoutChecks(MysqlLink $mysql): void
 {
     echo "=== SqlQueue visibility timeout ===\n";
-
-    $mysql->execute('DELETE FROM kinetis_queue_jobs');
-
-    $withoutTimeout = new SqlQueue($mysql);
-    $withoutTimeout->push(new IntegrationTestJob('stranded-forever'));
-    $popped = $withoutTimeout->pop(timeoutSeconds: 5);
-    check('SqlQueue: job popped once', $popped !== null);
-    // Deliberately never ack()/release() — simulating a crashed worker.
-    sleep(2);
-    check(
-        'SqlQueue: without a visibility timeout, a crashed worker\'s job is never reclaimed',
-        $withoutTimeout->pop(timeoutSeconds: 1, queues: ['default']) === null,
-    );
 
     $mysql->execute('DELETE FROM kinetis_queue_jobs');
 

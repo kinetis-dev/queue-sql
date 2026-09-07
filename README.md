@@ -52,10 +52,10 @@ directory with a timestamp prefix, then run `vendor/bin/kinetis migrate`.
 `SqlQueue` declares `Kinetis\Queue\ClearableQueueInterface`. Clearing
 deletes every row on the queue whose `reserved_at` is null, and reports
 how many the `DELETE` removed. That is narrower than what `size()`
-counts: under `QUEUE_VISIBILITY_TIMEOUT_SECONDS`, an expired reservation
-counts as waiting and `pop()` may reclaim it, but `clear()` still leaves
-it alone — the worker holding it may simply be slow, and still has a
-settlement to make.
+counts: an expired reservation — one older than
+`QUEUE_VISIBILITY_TIMEOUT_SECONDS` — counts as waiting and `pop()` may
+reclaim it, but `clear()` still leaves it alone — the worker holding it
+may simply be slow, and still has a settlement to make.
 
 Every reservation and every timeout reclaim writes a fresh random
 `reserved_token`, and `ack()`/`release()`/`fail()` match on the row id
@@ -83,7 +83,7 @@ key this package introduces itself:
 
 | Key | Default | Purpose |
 |---|---|---|
-| `QUEUE_VISIBILITY_TIMEOUT_SECONDS` | *(unset — never reclaimed)* | Seconds before a crashed worker's reserved job becomes poppable again. |
+| `QUEUE_VISIBILITY_TIMEOUT_SECONDS` | `300` | Seconds before a crashed worker's reserved job becomes poppable again. Must be a positive integer. |
 
 Both are scoped by `QUEUE_CONNECTION_NAME` the same way every other
 backend's keys are. [`kinetis/queue`](https://github.com/kinetis-dev/queue)'s own keys (`QUEUE_CONNECTION`,
