@@ -44,18 +44,20 @@ final class SqlQueueReservationFencingTest extends TestCase
         self::assertSame($job->handle->token, $link->row['reserved_token']);
     }
 
-    public function test_every_reclaim_of_the_same_row_writes_a_different_token(): void
+    public function test_every_reclaim_of_the_same_row_writes_a_different_token_and_credits_the_crashed_attempt(): void
     {
         $link = self::link();
         $queue = new SqlQueue($link, visibilityTimeoutSeconds: 60);
 
         $tokens = [];
+        $attempts = [];
 
         for ($reclaim = 0; $reclaim < 3; ++$reclaim) {
             $job = $queue->pop();
 
             self::assertInstanceOf(Reservation::class, $job?->handle);
             $tokens[] = $job->handle->token;
+            $attempts[] = $job->attempts;
 
             // The previous delivery is never settled — the worker
             // holding it crashed, which is what a timeout reclaims for.
@@ -67,6 +69,11 @@ final class SqlQueueReservationFencingTest extends TestCase
         foreach ($tokens as $token) {
             self::assertMatchesRegularExpression(self::TOKEN_PATTERN, $token);
         }
+
+        // Successive deliveries of the same row count up: a reclaim
+        // credits the delivery it replaces. SqlQueue's class docblock
+        // owns why a fresh reservation does not.
+        self::assertSame([1, 2, 3], $attempts);
     }
 
     /**
