@@ -6,7 +6,7 @@ namespace Kinetis\QueueSql;
 
 use InvalidArgumentException;
 use Kinetis\Config\Config;
-use Kinetis\Persistence\SqlConnectionFactory;
+use Kinetis\DatabaseBridge\ConnectionFactory;
 use Kinetis\Queue\ClearableQueueInterface;
 
 /**
@@ -32,7 +32,7 @@ final class SqlQueueFactory
     public static function fromConfig(Config $config, string $connectionName = 'default'): ClearableQueueInterface
     {
         return new SqlQueue(
-            SqlConnectionFactory::fromConfig($config, $connectionName),
+            ConnectionFactory::fromConfig($config, $connectionName),
             self::visibilityTimeoutSeconds($config, $connectionName),
         );
     }

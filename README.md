@@ -78,7 +78,7 @@ DB_USER=app
 DB_PASSWORD=secret
 ```
 
-`DB_*` are the exact keys [`kinetis/persistence`](https://github.com/kinetis-dev/persistence) already reads. The one
+`DB_*` are the exact keys [`kinetis/database-bridge`](https://github.com/kinetis-dev/database-bridge) reads. The one
 key this package introduces itself:
 
 | Key | Default | Purpose |
@@ -97,8 +97,9 @@ reference:
 composer require kinetis/queue-sql
 ```
 
-Requires PHP 8.4+, [`kinetis/framework`](https://github.com/kinetis-dev/framework), [`kinetis/queue`](https://github.com/kinetis-dev/queue), and
-[`kinetis/persistence`](https://github.com/kinetis-dev/persistence). Full documentation:
+Requires PHP 8.4+, [`kinetis/framework`](https://github.com/kinetis-dev/framework), [`kinetis/queue`](https://github.com/kinetis-dev/queue),
+[`kinetis/persistence`](https://github.com/kinetis-dev/persistence), and
+[`kinetis/database-bridge`](https://github.com/kinetis-dev/database-bridge). Full documentation:
 [kinetis.dev/docs/queue-sql.html](https://kinetis.dev/docs/queue-sql.html).
 
 ## License

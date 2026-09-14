@@ -13,7 +13,7 @@ use PHPUnit\Framework\TestCase;
 use ReflectionProperty;
 
 /**
- * Construction only — SqlConnectionFactory::fromConfig() doesn't connect
+ * Construction only — ConnectionFactory::fromConfig() doesn't connect
  * eagerly (neither the native mysqli/pgsql drivers nor the PDO ones open
  * a socket in their own constructors), so this is safe to run with no
  * real database reachable. SqlQueue's own backend-specific correctness

@@ -12,7 +12,8 @@
         "php": "^8.4",
         "kinetis/framework": "dev-main",
         "kinetis/queue": "dev-main",
-        "kinetis/persistence": "dev-main"
+        "kinetis/persistence": "dev-main",
+        "kinetis/database-bridge": "dev-main"
     },
     "require-dev": {
         "infection/infection": "^0.35.0",
@@ -45,6 +46,10 @@
         {
             "type": "path",
             "url": "../persistence"
+        },
+        {
+            "type": "path",
+            "url": "../database-bridge"
         }
     ],
     "config": {

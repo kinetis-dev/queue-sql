@@ -4,28 +4,28 @@
         "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
         "This file is @generated automatically"
     ],
-    "content-hash": "df718cc3aad6ac61b2107020eaf8e2cc",
+    "content-hash": "580bff666efe7119ee9258a7bec96f20",
     "packages": [
         {
             "name": "graham-campbell/result-type",
-            "version": "v1.1.4",
+            "version": "v1.2.0",
             "source": {
                 "type": "git",
                 "url": "https://github.com/GrahamCampbell/Result-Type.git",
-                "reference": "e01f4a821471308ba86aa202fed6698b6b695e3b"
+                "reference": "adccca3324eece92ca35463648c12b9e6293c05b"
             },
             "dist": {
                 "type": "zip",
-                "url": "https://api.github.com/repos/GrahamCampbell/Result-Type/zipball/e01f4a821471308ba86aa202fed6698b6b695e3b",
-                "reference": "e01f4a821471308ba86aa202fed6698b6b695e3b",
+                "url": "https://api.github.com/repos/GrahamCampbell/Result-Type/zipball/adccca3324eece92ca35463648c12b9e6293c05b",
+                "reference": "adccca3324eece92ca35463648c12b9e6293c05b",
                 "shasum": ""
             },
             "require": {
                 "php": "^7.2.5 || ^8.0",
-                "phpoption/phpoption": "^1.9.5"
+                "phpoption/phpoption": "^1.10"
             },
             "require-dev": {
-                "phpunit/phpunit": "^8.5.41 || ^9.6.22 || ^10.5.45 || ^11.5.7"
+                "phpunit/phpunit": "^8.5.52 || ^9.6.34 || ^10.5.63 || ^11.5.55 || ^12.5.14"
             },
             "type": "library",
             "autoload": {
@@ -54,7 +54,7 @@
             ],
             "support": {
                 "issues": "https://github.com/GrahamCampbell/Result-Type/issues",
-                "source": "https://github.com/GrahamCampbell/Result-Type/tree/v1.1.4"
+                "source": "https://github.com/GrahamCampbell/Result-Type/tree/v1.2.0"
             },
             "funding": [
                 {
@@ -66,7 +66,63 @@
                     "type": "tidelift"
                 }
             ],
-            "time": "2025-12-27T19:43:20+00:00"
+            "time": "2026-08-24T09:06:52+00:00"
+        },
+        {
+            "name": "kinetis/database-bridge",
+            "version": "dev-main",
+            "dist": {
+                "type": "path",
+                "url": "../database-bridge",
+                "reference": "33d45305082ce91333b092bcadc01d842b89a9b7"
+            },
+            "require": {
+                "kinetis/framework": "dev-main",
+                "kinetis/persistence": "dev-main",
+                "php": "^8.4",
+                "psr/log": "^3.0.2"
+            },
+            "require-dev": {
+                "infection/infection": "^0.35.0",
+                "kinetis/mcp": "dev-main",
+                "kinetis/queue": "dev-main",
+                "nyholm/psr7": "^1.8.2",
+                "phpstan/phpstan": "^2.2.8",
+                "phpunit/phpunit": "^13.3.3",
+                "vimeo/psalm": "^6.17"
+            },
+            "suggest": {
+                "kinetis/migrations": "Migration runner and migrate commands, connecting through this package's connection policy.",
+                "kinetis/query-builder": "Parameterized queries and row-to-DTO mapping over the MysqlLink/PostgresLink this package binds."
+            },
+            "type": "library",
+            "extra": {
+                "kinetis": {
+                    "bootstrap": "Kinetis\\DatabaseBridge\\PackageBootstrap"
+                }
+            },
+            "autoload": {
+                "psr-4": {
+                    "Kinetis\\DatabaseBridge\\": "src/"
+                }
+            },
+            "autoload-dev": {
+                "psr-4": {
+                    "Kinetis\\DatabaseBridge\\Tests\\": "tests/"
+                }
+            },
+            "license": [
+                "MIT"
+            ],
+            "authors": [
+                {
+                    "name": "Alon Noy"
+                }
+            ],
+            "description": "Kinetis wiring for kinetis/persistence: DB_* connection configuration and the default link binding, SQL spans through Kinetis telemetry, and a lazy request-scoped TransactionGuard whose cleanup is registered once a scope resolves it.",
+            "transport-options": {
+                "relative": true
+            }
         },
         {
             "name": "kinetis/framework",
@@ -138,35 +194,28 @@
             "dist": {
                 "type": "path",
                 "url": "../persistence",
-                "reference": "39f4af7be651d5df70eaa010c3abfcae795750d9"
+                "reference": "4d6c00dfc5258293b4dc5deadb2fde4325335eca"
             },
             "require": {
-                "kinetis/framework": "dev-main",
                 "php": "^8.4",
+                "psr/log": "^3.0.2",
                 "revolt/event-loop": "^1.0.9"
             },
             "require-dev": {
                 "infection/infection": "^0.35.0",
-                "kinetis/mcp": "dev-main",
-                "kinetis/queue": "dev-main",
-                "nyholm/psr7": "^1.8.2",
+                "kinetis/framework": "dev-main",
                 "phpstan/phpstan": "^2.2.8",
                 "phpunit/phpunit": "^13.3.3",
                 "vimeo/psalm": "^6.17"
             },
             "suggest": {
-                "ext-mysqli": "Needed by the native MySQL driver (Kinetis\\Persistence\\Driver\\MysqliAsyncClient) — the default under FrankenPHP worker mode via DB_DRIVER=auto.",
-                "ext-pdo_mysql": "Needed by the PDO MySQL driver (Kinetis\\Persistence\\Driver\\PdoMysqlClient) — the default under PHP-FPM via DB_DRIVER=auto.",
-                "ext-pdo_pgsql": "Needed by the PDO Postgres driver (Kinetis\\Persistence\\Driver\\PdoPgsqlClient) — the default under PHP-FPM via DB_DRIVER=auto.",
-                "ext-pgsql": "Needed by the native Postgres driver (Kinetis\\Persistence\\Driver\\PgsqlAsyncClient) — the default under FrankenPHP worker mode via DB_DRIVER=auto.",
+                "ext-mysqli": "Needed by the native MySQL driver (Kinetis\\Persistence\\Driver\\MysqliAsyncClient) — the auto driver's choice under FrankenPHP worker mode and RoadRunner.",
+                "ext-pdo_mysql": "Needed by the PDO MySQL driver (Kinetis\\Persistence\\Driver\\PdoMysqlClient) — the auto driver's choice everywhere else, PHP-FPM included.",
+                "ext-pdo_pgsql": "Needed by the PDO Postgres driver (Kinetis\\Persistence\\Driver\\PdoPgsqlClient) — the auto driver's choice everywhere else, PHP-FPM included.",
+                "ext-pgsql": "Needed by the native Postgres driver (Kinetis\\Persistence\\Driver\\PgsqlAsyncClient) — the auto driver's choice under FrankenPHP worker mode and RoadRunner.",
                 "ext-sockets": "Needed alongside ext-pgsql by the native Postgres driver (Kinetis\\Persistence\\Driver\\PgsqlAsyncClient), which ends a connection's transport with socket_shutdown() to abandon a statement without blocking the event loop."
             },
             "type": "library",
-            "extra": {
-                "kinetis": {
-                    "bootstrap": "Kinetis\\Persistence\\PackageBootstrap"
-                }
-            },
             "autoload": {
                 "psr-4": {
                     "Kinetis\\Persistence\\": "src/"
@@ -185,7 +234,7 @@
                     "name": "Alon Noy"
                 }
             ],
-            "description": "Request-scoped SQL transaction safety net, runtime-matched native DB drivers (mysqli async, ext-pgsql async, PDO), and the connection factory for Kinetis — MySQL and Postgres.",
+            "description": "Runtime-matched MySQL and Postgres clients (mysqli async, ext-pgsql async, PDO) built from a neutral connection definition, with a transaction safety net and injectable SQL instrumentation. Usable standalone; kinetis/database-bridge wires it into Kinetis.",
             "transport-options": {
                 "relative": true
             }
@@ -389,16 +438,16 @@
         },
         {
             "name": "phpoption/phpoption",
-            "version": "1.9.5",
+            "version": "1.10.0",
             "source": {
                 "type": "git",
                 "url": "https://github.com/schmittjoh/php-option.git",
-                "reference": "75365b91986c2405cf5e1e012c5595cd487a98be"
+                "reference": "67b192b6a42ec03944b972d6e633ddec78ad2c6d"
             },
             "dist": {
                 "type": "zip",
-                "url": "https://api.github.com/repos/schmittjoh/php-option/zipball/75365b91986c2405cf5e1e012c5595cd487a98be",
-                "reference": "75365b91986c2405cf5e1e012c5595cd487a98be",
+                "url": "https://api.github.com/repos/schmittjoh/php-option/zipball/67b192b6a42ec03944b972d6e633ddec78ad2c6d",
+                "reference": "67b192b6a42ec03944b972d6e633ddec78ad2c6d",
                 "shasum": ""
             },
             "require": {
@@ -406,7 +455,7 @@
             },
             "require-dev": {
                 "bamarni/composer-bin-plugin": "^1.8.2",
-                "phpunit/phpunit": "^8.5.44 || ^9.6.25 || ^10.5.53 || ^11.5.34"
+                "phpunit/phpunit": "^8.5.54 || ^9.6.36 || ^10.5.64 || ^11.5.56 || ^12.5.33"
             },
             "type": "library",
             "extra": {
@@ -448,7 +497,7 @@
             ],
             "support": {
                 "issues": "https://github.com/schmittjoh/php-option/issues",
-                "source": "https://github.com/schmittjoh/php-option/tree/1.9.5"
+                "source": "https://github.com/schmittjoh/php-option/tree/1.10.0"
             },
             "funding": [
                 {
@@ -460,7 +509,7 @@
                     "type": "tidelift"
                 }
             ],
-            "time": "2025-12-27T19:41:33+00:00"
+            "time": "2026-08-24T00:54:40+00:00"
         },
         {
             "name": "psr/container",
@@ -1213,23 +1262,23 @@
         },
         {
             "name": "vlucas/phpdotenv",
-            "version": "v5.6.4",
+            "version": "v5.7.0",
             "source": {
                 "type": "git",
                 "url": "https://github.com/vlucas/phpdotenv.git",
-                "reference": "416df702837983f8d5ff48c9c3fee4f5f57b980b"
+                "reference": "301c07936b16d88628b126b01d082ba153cf4c40"
             },
             "dist": {
                 "type": "zip",
-                "url": "https://api.github.com/repos/vlucas/phpdotenv/zipball/416df702837983f8d5ff48c9c3fee4f5f57b980b",
-                "reference": "416df702837983f8d5ff48c9c3fee4f5f57b980b",
+                "url": "https://api.github.com/repos/vlucas/phpdotenv/zipball/301c07936b16d88628b126b01d082ba153cf4c40",
+                "reference": "301c07936b16d88628b126b01d082ba153cf4c40",
                 "shasum": ""
             },
             "require": {
                 "ext-pcre": "*",
-                "graham-campbell/result-type": "^1.1.4",
+                "graham-campbell/result-type": "^1.2",
                 "php": "^7.2.5 || ^8.0",
-                "phpoption/phpoption": "^1.9.5",
+                "phpoption/phpoption": "^1.10",
                 "symfony/polyfill-ctype": "^1.26",
                 "symfony/polyfill-mbstring": "^1.26",
                 "symfony/polyfill-php80": "^1.26"
@@ -1273,7 +1322,7 @@
                     "homepage": "https://github.com/vlucas"
                 }
             ],
-            "description": "Loads environment variables from `.env` to `getenv()`, `$_ENV` and `$_SERVER` automagically.",
+            "description": "Loads environment variables from `.env` to `$_ENV` and `$_SERVER` automagically, and optionally to `getenv()`.",
             "keywords": [
                 "dotenv",
                 "env",
@@ -1281,7 +1330,7 @@
             ],
             "support": {
                 "issues": "https://github.com/vlucas/phpdotenv/issues",
-                "source": "https://github.com/vlucas/phpdotenv/tree/v5.6.4"
+                "source": "https://github.com/vlucas/phpdotenv/tree/v5.7.0"
             },
             "funding": [
                 {
@@ -1293,7 +1342,7 @@
                     "type": "tidelift"
                 }
             ],
-            "time": "2026-07-06T19:11:50+00:00"
+            "time": "2026-08-24T18:07:49+00:00"
         }
     ],
     "packages-dev": [
@@ -7413,6 +7462,7 @@
     "aliases": [],
     "minimum-stability": "stable",
     "stability-flags": {
+        "kinetis/database-bridge": 20,
         "kinetis/framework": 20,
         "kinetis/persistence": 20,
         "kinetis/queue": 20
