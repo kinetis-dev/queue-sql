@@ -74,7 +74,7 @@
             "dist": {
                 "type": "path",
                 "url": "../database-bridge",
-                "reference": "33d45305082ce91333b092bcadc01d842b89a9b7"
+                "reference": "866b277e44343f2dd411b91b6c0f60f9b022d92d"
             },
             "require": {
                 "kinetis/framework": "dev-main",
@@ -85,6 +85,8 @@
             "require-dev": {
                 "infection/infection": "^0.35.0",
                 "kinetis/mcp": "dev-main",
+                "kinetis/orm": "dev-main",
+                "kinetis/query-builder": "dev-main",
                 "kinetis/queue": "dev-main",
                 "nyholm/psr7": "^1.8.2",
                 "phpstan/phpstan": "^2.2.8",
@@ -93,12 +95,14 @@
             },
             "suggest": {
                 "kinetis/migrations": "Migration runner and migrate commands, connecting through this package's connection policy.",
+                "kinetis/orm": "Attributed entities, typed repositories and a request-scoped EntityManager over the link this package binds, with entity metadata compiled into the AOT cache.",
                 "kinetis/query-builder": "Parameterized queries and row-to-DTO mapping over the MysqlLink/PostgresLink this package binds."
             },
             "type": "library",
             "extra": {
                 "kinetis": {
-                    "bootstrap": "Kinetis\\DatabaseBridge\\PackageBootstrap"
+                    "bootstrap": "Kinetis\\DatabaseBridge\\PackageBootstrap",
+                    "discovery": "Kinetis\\DatabaseBridge\\OrmMetadata"
                 }
             },
             "autoload": {
@@ -119,7 +123,7 @@
                     "name": "Alon Noy"
                 }
             ],
-            "description": "Kinetis wiring for kinetis/persistence: DB_* connection configuration and the default link binding, SQL spans through Kinetis telemetry, and a lazy request-scoped TransactionGuard whose cleanup is registered once a scope resolves it.",
+            "description": "Kinetis wiring for kinetis/persistence and kinetis/orm: DB_* connection configuration and the default link binding, SQL spans through Kinetis telemetry, a lazy request-scoped TransactionGuard whose cleanup is registered once a scope resolves it, and, with kinetis/orm installed, AOT-compiled entity metadata and a lazy request-scoped EntityManager.",
             "transport-options": {
                 "relative": true
             }
