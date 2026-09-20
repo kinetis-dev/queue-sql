@@ -7,7 +7,6 @@ namespace Kinetis\QueueSql;
 use InvalidArgumentException;
 use Kinetis\Config\Config;
 use Kinetis\DatabaseBridge\ConnectionFactory;
-use Kinetis\Queue\ClearableQueueInterface;
 
 /**
  * Builds the SQL queue backend `QUEUE_CONNECTION=sql` selects — called
@@ -16,9 +15,14 @@ use Kinetis\Queue\ClearableQueueInterface;
  * directly, the same pattern used for every other optional queue
  * backend (`kinetis/queue-sqs`, `kinetis/queue-rabbitmq`).
  *
- * Returns `ClearableQueueInterface`, the capability this backend
- * declares; see `QueueFactory` for why the connection-driven factory
- * stays on `QueueInterface`.
+ * Returns the concrete `SqlQueue`. `pushOn()` is this backend's own API
+ * and sits on no interface, so the concrete return type is what lets a
+ * caller who has already named the backend reach it, and lets an
+ * application bind `SqlQueue::class` to this result without a runtime
+ * narrowing check. Every `QueueInterface` and `ClearableQueueInterface`
+ * consumer is unaffected, since `SqlQueue` implements both. See
+ * `QueueFactory` for why the connection-driven factory stays on
+ * `QueueInterface`.
  */
 final class SqlQueueFactory
 {
@@ -29,7 +33,7 @@ final class SqlQueueFactory
      */
     private const int DEFAULT_VISIBILITY_TIMEOUT_SECONDS = 300;
 
-    public static function fromConfig(Config $config, string $connectionName = 'default'): ClearableQueueInterface
+    public static function fromConfig(Config $config, string $connectionName = 'default'): SqlQueue
     {
         return new SqlQueue(
             ConnectionFactory::fromConfig($config, $connectionName),

@@ -16,12 +16,20 @@ use Throwable;
  * doubles as an ordering proof: push() argument validation must run
  * before jobPushStarted() is ever called at all, so a rejected push()
  * must throw the validation exception, never this fixture's own.
+ *
+ * jobPushEnded() also records how it was called, so a test can assert
+ * the span closed exactly once and with the failure the enqueue
+ * statement raised rather than with null.
  */
 final class ThrowingTelemetry implements TelemetryInterface
 {
     public bool $throwOnJobPushEnded = false;
 
     public bool $throwOnJobPushStarted = false;
+
+    public int $jobPushEndedCalls = 0;
+
+    public ?Throwable $jobPushEndedFailure = null;
 
     #[\Override]
     public function phase(string $name, float $startedAt, float $endedAt): void {}
@@ -168,6 +176,9 @@ final class ThrowingTelemetry implements TelemetryInterface
     #[\Override]
     public function jobPushEnded(mixed $token, ?Throwable $failure): void
     {
+        ++$this->jobPushEndedCalls;
+        $this->jobPushEndedFailure = $failure;
+
         if ($this->throwOnJobPushEnded) {
             throw new RuntimeException('The telemetry backend failed to finish a job-push span.');
         }

@@ -7,9 +7,13 @@ namespace Kinetis\QueueSql\Tests;
 use InvalidArgumentException;
 use Kinetis\Config\Config;
 use Kinetis\Config\Exception\MissingConfigException;
+use Kinetis\Queue\ClearableQueueInterface;
 use Kinetis\QueueSql\SqlQueue;
 use Kinetis\QueueSql\SqlQueueFactory;
+use Kinetis\QueueSql\Tests\Fixtures\RecordingJob;
+use Kinetis\QueueSql\Tests\Fixtures\RecordingSqlTransaction;
 use PHPUnit\Framework\TestCase;
+use ReflectionMethod;
 use ReflectionProperty;
 
 /**
@@ -93,5 +97,46 @@ final class SqlQueueFactoryTest extends TestCase
 
         $property = new ReflectionProperty(SqlQueue::class, 'visibilityTimeoutSeconds');
         self::assertSame(300, $property->getValue($queue));
+    }
+
+    /**
+     * The declared return type, not merely the object that comes back:
+     * an application binding `SqlQueue::class` to this result, and the
+     * callers typed against that binding, reach `pushOn()` through the
+     * signature alone. Widening this to an interface would leave every
+     * assertInstanceOf() above passing while putting a runtime
+     * narrowing check between a caller and the one API it named this
+     * backend for.
+     */
+    public function test_the_declared_return_type_is_the_class_carrying_push_on(): void
+    {
+        $returnType = (new ReflectionMethod(SqlQueueFactory::class, 'fromConfig'))->getReturnType();
+
+        self::assertNotNull($returnType);
+        self::assertSame(SqlQueue::class, (string) $returnType);
+    }
+
+    /**
+     * The concrete return type takes nothing away: the queue this
+     * builds still satisfies the contracts `QueueFactory` and
+     * `PackageBootstrap` hand out, and its enlisted push runs on the
+     * transaction it is given rather than the connection built here —
+     * which is what keeps this test offline.
+     */
+    public function test_the_built_queue_still_satisfies_the_shared_contracts_and_enlists_a_transaction(): void
+    {
+        $config = new Config([
+            'DB_CONNECTION' => 'mysql',
+            'DB_PASSWORD' => 'secret',
+        ]);
+
+        $queue = SqlQueueFactory::fromConfig($config);
+        self::assertInstanceOf(ClearableQueueInterface::class, $queue);
+
+        $transaction = new RecordingSqlTransaction();
+        $queue->pushOn($transaction, new RecordingJob('hello'));
+
+        self::assertCount(1, $transaction->executed);
+        self::assertStringStartsWith('INSERT INTO kinetis_queue_jobs ', $transaction->executed[0][0]);
     }
 }

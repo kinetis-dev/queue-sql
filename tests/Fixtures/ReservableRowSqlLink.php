@@ -179,7 +179,11 @@ final class ReservableRowSqlLink implements SqlLink
      */
     private function release(string $sql, array $params): int
     {
-        if (!$this->matches($sql, $params)) {
+        // The fenced UPDATE sets the new available_at first and the
+        // id/token predicate follows it, so the predicate is compared
+        // against the parameters that actually belong to the WHERE
+        // clause rather than the whole list.
+        if (!$this->matches($sql, \array_slice($params, 1))) {
             return 0;
         }
 
@@ -188,6 +192,7 @@ final class ReservableRowSqlLink implements SqlLink
         $row['reserved_at'] = null;
         $row['reserved_token'] = null;
         $row['attempts'] = ((int) $row['attempts']) + 1;
+        $row['available_at'] = $params[0];
         $this->row = $row;
 
         return 1;

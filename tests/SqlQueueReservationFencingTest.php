@@ -151,6 +151,65 @@ final class SqlQueueReservationFencingTest extends TestCase
         self::assertNull($link->row, "{$operation->value}() must have removed the row");
     }
 
+    /**
+     * The delayed retry is the existing fenced UPDATE writing one more
+     * column: `available_at` moves to `now + $delaySeconds` in the same
+     * `Y-m-d H:i:s` format push() writes, and the `id + reserved_token`
+     * predicate — the whole reason a late settlement cannot touch
+     * somebody else's row — is still on the statement.
+     */
+    public function test_a_delayed_release_moves_available_at_without_giving_up_the_token_predicate(): void
+    {
+        $link = self::link();
+        $queue = new SqlQueue($link);
+
+        $job = $queue->pop();
+        self::assertInstanceOf(QueuedJob::class, $job);
+
+        $before = time();
+        $queue->release($job, 300);
+        $after = time();
+
+        [$sql, $params] = $link->executed[array_key_last($link->executed)];
+
+        self::assertStringContainsString('SET reserved_at = NULL, reserved_token = NULL, attempts = attempts + 1', $sql);
+        self::assertStringContainsString('available_at = ?', $sql);
+        self::assertStringContainsString('WHERE id = ? AND reserved_token = ?', $sql);
+
+        self::assertSame(7, $params[1]);
+        self::assertInstanceOf(Reservation::class, $job->handle);
+        self::assertSame($job->handle->token, $params[2]);
+
+        $dueAt = strtotime((string) $params[0]);
+        self::assertGreaterThanOrEqual($before + 300, $dueAt);
+        self::assertLessThanOrEqual($after + 300, $dueAt);
+        self::assertNotNull($link->row);
+        self::assertSame($params[0], $link->row['available_at']);
+    }
+
+    /**
+     * A release with no delay still writes the column, as "due now" —
+     * the row's earlier `available_at` must not survive a retry and let
+     * a future enqueue delay leak into it.
+     */
+    public function test_an_undelayed_release_makes_the_row_due_immediately(): void
+    {
+        $link = self::link(['available_at' => '2020-01-01 00:00:00']);
+        $queue = new SqlQueue($link);
+
+        $job = $queue->pop();
+        self::assertInstanceOf(QueuedJob::class, $job);
+
+        $before = time();
+        $queue->release($job);
+        $after = time();
+
+        $dueAt = strtotime((string) $link->row['available_at']);
+
+        self::assertGreaterThanOrEqual($before, $dueAt);
+        self::assertLessThanOrEqual($after, $dueAt);
+    }
+
     public function test_a_settlement_whose_row_is_gone_is_reported_as_stale(): void
     {
         $link = self::link();

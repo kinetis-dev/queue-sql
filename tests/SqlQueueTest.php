@@ -10,6 +10,7 @@ use Kinetis\Persistence\Contract\SqlTransaction;
 use Kinetis\Queue\Exception\InvalidQueueArgumentException;
 use Kinetis\Queue\ClearableQueueInterface;
 use Kinetis\Queue\Exception\MalformedQueuedJobDataException;
+use Kinetis\Queue\QueuedJob;
 use Kinetis\QueueSql\Reservation;
 use Kinetis\QueueSql\SqlQueue;
 use Kinetis\QueueSql\Tests\Fixtures\RecordingJob;
@@ -98,6 +99,19 @@ final class SqlQueueTest extends TestCase
         $this->expectExceptionMessage('visibilityTimeoutSeconds of at least 1, got -5');
 
         new SqlQueue($this->neverTouchedLink(), visibilityTimeoutSeconds: -5);
+    }
+
+    /**
+     * The link throws on any statement at all, so a delay the universal
+     * contract rejects cannot have reached the UPDATE.
+     */
+    public function test_release_rejects_a_negative_delay_before_ever_touching_the_database(): void
+    {
+        $queue = new SqlQueue($this->neverTouchedLink());
+        $job = new QueuedJob(RecordingJob::class, ['message' => 'x'], handle: self::someReservation(), queue: 'default');
+
+        $this->expectException(InvalidQueueArgumentException::class);
+        $queue->release($job, -1);
     }
 
     public function test_push_rejects_an_empty_queue_name_before_ever_touching_the_database(): void

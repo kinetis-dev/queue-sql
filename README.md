@@ -67,6 +67,58 @@ keep the visibility timeout comfortably longer than your slowest job:
 fencing keeps a late settlement from doing damage, it does not stop the
 job from running twice.
 
+## Enqueueing inside your own transaction
+
+`push()` runs its `INSERT` on the queue's own connection, so the job is
+enqueued even when a transaction the caller is inside later rolls back.
+`pushOn()` places the row on a transaction you already hold instead:
+
+```php
+use Kinetis\Persistence\Contract\SqlTransaction;
+
+$guard->transaction($link, function (SqlTransaction $tx) use ($queue, $orderId): void {
+    $tx->execute('UPDATE orders SET status = ? WHERE id = ?', ['paid', $orderId]);
+
+    $queue->pushOn($tx, new SendReceipt($orderId));
+});
+```
+
+The row becomes visible and durable only if that transaction commits. A
+throw before the commit rolls it back with the rest of the work, and a
+`COMMIT` that fails leaves the outcome unknown, the same as for every
+other statement in the transaction. `pushOn()` runs one statement on the
+transaction you give it and nothing else — it never commits, rolls back,
+nests, or reaches for the queue's own connection, so ending the
+transaction stays yours.
+
+The transaction must address the database holding `kinetis_queue_jobs`.
+`QUEUE_CONNECTION_NAME` picks the connection behind `push()` and does not
+redirect a transaction you supply.
+
+This is `kinetis/queue-sql`'s own API, not part of `QueueInterface`, so
+it needs a `SqlQueue` rather than the interface the container binds.
+`SqlQueueFactory::fromConfig()` returns that class. Build it once and
+register that one object under both ids:
+
+```php
+use Kinetis\Queue\QueueInterface;
+use Kinetis\QueueSql\SqlQueue;
+use Kinetis\QueueSql\SqlQueueFactory;
+
+$queue = SqlQueueFactory::fromConfig($config);
+
+$app->instance(SqlQueue::class, $queue);
+$app->instance(QueueInterface::class, $queue);
+```
+
+Ordinary `QueueInterface` consumers and `pushOn()` callers then share one
+backend instance and its one connection pool. Binding only
+`SqlQueue::class` leaves the default `QueueInterface` binding in place,
+and it builds a second `SqlQueue` with a pool of its own.
+
+`pushOn()` takes a raw `Kinetis\Persistence\Contract\SqlTransaction`;
+an ORM transaction session does not expose its transaction.
+
 ## Configuration
 
 ```

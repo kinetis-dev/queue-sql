@@ -6,6 +6,7 @@ namespace Kinetis\QueueSql;
 
 use Kinetis\Instrumentation\Telemetry;
 use Kinetis\Persistence\Contract\SqlLink;
+use Kinetis\Persistence\Contract\SqlTransaction;
 use Kinetis\Async\Timer;
 use Kinetis\Persistence\TransactionGuard;
 use Kinetis\Queue\ClearableQueueInterface;
@@ -45,10 +46,10 @@ use Throwable;
  * already checks every queue atomically, so there is no per-queue sweep to
  * sequence. See QueueInterface for the cross-backend pop() contract.
  *
- * `max_attempts` is set once at push() (SQL NULL meaning "defer to the
- * worker's default") and never changes; it and `attempts` are read back on
- * every pop(), so a caller can choose between release() and fail() without
- * querying the table.
+ * `max_attempts` is set once when the job is enqueued (SQL NULL meaning
+ * "defer to the worker's default") and never changes; it and `attempts`
+ * are read back on every pop(), so a caller can choose between release()
+ * and fail() without querying the table.
  *
  * $visibilityTimeoutSeconds is the finite reclaim window for a row whose
  * worker crashed between pop() and settlement: reserveNext() also matches
@@ -97,9 +98,65 @@ final class SqlQueue implements ClearableQueueInterface
         }
     }
 
+    /**
+     * Not enlisted in a transaction the caller has open: the INSERT runs
+     * on the link this queue was constructed with. pushOn() is the route
+     * for placing the row inside a transaction the caller owns.
+     */
     #[\Override]
     public function push(Job $job, int $delaySeconds = 0, string $queue = 'default', ?int $maxAttempts = null): void
     {
+        self::insert($this->db, $job, $delaySeconds, $queue, $maxAttempts);
+    }
+
+    /**
+     * Enqueues a job on a transaction the caller already owns, so the
+     * row lands in the same unit of work as the writes it belongs to.
+     *
+     * The INSERT becomes visible and durable only if the caller commits.
+     * A throw before the commit rolls this row back with the caller's
+     * other work, and a COMMIT that fails leaves the transaction — this
+     * row with it — at the unknown outcome
+     * {@see \Kinetis\Persistence\Contract\SqlTransaction} describes.
+     *
+     * $transaction is the only thing this runs SQL on. It is not
+     * committed, rolled back, nested inside another transaction, or
+     * retained past the call, and the constructor link is untouched.
+     * That makes addressing the database holding `kinetis_queue_jobs`
+     * the caller's job: `QUEUE_CONNECTION_NAME` picks the connection
+     * behind the constructor link and does not redirect a supplied
+     * transaction.
+     *
+     * Push telemetry closes when the INSERT statement completes, so the
+     * span reports the enqueue statement rather than the later commit.
+     *
+     * This route is for callers using raw persistence transactions. An
+     * ORM transaction session does not expose its transaction.
+     */
+    public function pushOn(
+        SqlTransaction $transaction,
+        Job $job,
+        int $delaySeconds = 0,
+        string $queue = 'default',
+        ?int $maxAttempts = null,
+    ): void {
+        self::insert($transaction, $job, $delaySeconds, $queue, $maxAttempts);
+    }
+
+    /**
+     * The single insertion path behind push() and pushOn(), so argument
+     * validation, serialization, telemetry, timestamps and the INSERT
+     * shape cannot drift apart. $link is whichever execution surface the
+     * caller picked: the constructor link, or a caller's transaction
+     * whose commit decides whether the row survives.
+     */
+    private static function insert(
+        SqlLink $link,
+        Job $job,
+        int $delaySeconds,
+        string $queue,
+        ?int $maxAttempts,
+    ): void {
         QueueContract::assertValidPushArguments($delaySeconds, $queue, $maxAttempts);
 
         $telemetryToken = Telemetry::global()->jobPushStarted($job::class, $queue);
@@ -109,7 +166,7 @@ final class SqlQueue implements ClearableQueueInterface
             $now = self::now();
             $metadata = Telemetry::global()->jobPushMetadata($telemetryToken);
 
-            $this->db->execute(
+            $link->execute(
                 'INSERT INTO ' . self::TABLE . ' (class, args, queue, available_at, attempts, max_attempts, metadata, created_at) VALUES (?, ?, ?, ?, 0, ?, ?, ?)',
                 [
                     $serialized['class'],
@@ -251,20 +308,29 @@ final class SqlQueue implements ClearableQueueInterface
     }
 
     /**
-     * Clears the reservation and credits the attempt for this delivery
-     * only. The token predicate is what keeps a late release() from
-     * unreserving a row another worker is actively running and adding an
-     * attempt that worker never made.
+     * Clears the reservation, credits the attempt for this delivery only,
+     * and moves `available_at` to `now + $delaySeconds` — the same column
+     * and the same `date('Y-m-d H:i:s')` format push() writes a delayed
+     * enqueue with, and the one reserveNext() already requires to be due
+     * before it will reserve a row. A delayed retry therefore needs no
+     * schema change and no second mechanism: it is the existing fenced
+     * UPDATE writing one more column.
+     *
+     * The token predicate is what keeps a late release() from unreserving
+     * a row another worker is actively running, adding an attempt that
+     * worker never made, and pushing their job's availability out.
      */
     #[\Override]
-    public function release(QueuedJob $job): void
+    public function release(QueuedJob $job, int $delaySeconds = 0): void
     {
+        QueueContract::assertValidReleaseDelay($delaySeconds);
+
         $reservation = self::receipt($job);
 
         self::assertSettled(JobSettlement::Release, $job->queue, $this->db->execute(
             self::UPDATE_TABLE . ' SET reserved_at = NULL, reserved_token = NULL, attempts = attempts + 1'
-            . ' WHERE id = ? AND reserved_token = ?',
-            [$reservation->id, $reservation->token],
+            . ', available_at = ? WHERE id = ? AND reserved_token = ?',
+            [self::formatTimestamp(time() + $delaySeconds), $reservation->id, $reservation->token],
         )->getRowCount());
     }
 
