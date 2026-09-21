@@ -109,12 +109,20 @@ $queue = SqlQueueFactory::fromConfig($config);
 
 $app->instance(SqlQueue::class, $queue);
 $app->instance(QueueInterface::class, $queue);
+$app->onDispose($queue->dispose(...));
 ```
 
 Ordinary `QueueInterface` consumers and `pushOn()` callers then share one
 backend instance and its one connection pool. Binding only
 `SqlQueue::class` leaves the default `QueueInterface` binding in place,
 and it builds a second `SqlQueue` with a pool of its own.
+
+The factory opened that connection, so the queue owns it and the
+`onDispose()` line closes it when the worker ends. A `SqlQueue`
+constructed directly around a link you already have closes nothing: the
+link stays yours. See
+[kinetis.dev/docs/appendix-queue.html](https://kinetis.dev/docs/appendix-queue.html)'s
+"Connection ownership".
 
 `pushOn()` takes a raw `Kinetis\Persistence\Contract\SqlTransaction`;
 an ORM transaction session does not expose its transaction.

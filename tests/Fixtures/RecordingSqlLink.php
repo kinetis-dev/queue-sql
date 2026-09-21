@@ -12,8 +12,9 @@ use Kinetis\Persistence\Contract\SqlTransaction;
 use RuntimeException;
 
 /**
- * Records every execute() call without touching a real database — the
- * statements it captures are what a test reads its assertions off.
+ * Records every execute() and close() call without touching a real
+ * database — the statements and the close count it captures are what a
+ * test reads its assertions off.
  * query()/beginTransaction() stay unreachable-and-throwing, the same
  * "never touched" idiom SqlQueueTest's own neverTouchedLink() already
  * establishes: no operation exercised against this fake reaches either.
@@ -22,6 +23,8 @@ final class RecordingSqlLink implements SqlLink
 {
     /** @var list<array{string, array<int|string, mixed>}> */
     public array $executed = [];
+
+    public int $closeCalls = 0;
 
     #[\Override]
     public function query(string $sql): SqlResult
@@ -76,11 +79,12 @@ final class RecordingSqlLink implements SqlLink
     #[\Override]
     public function close(): void
     {
+        ++$this->closeCalls;
     }
 
     #[\Override]
     public function isClosed(): bool
     {
-        return false;
+        return $this->closeCalls > 0;
     }
 }

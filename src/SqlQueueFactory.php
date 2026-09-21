@@ -33,11 +33,22 @@ final class SqlQueueFactory
      */
     private const int DEFAULT_VISIBILITY_TIMEOUT_SECONDS = 300;
 
+    /**
+     * The link is opened here and belongs to the queue that gets it, so
+     * its close() travels with it as the queue's disposer — see
+     * `Kinetis\Queue\DisposableQueueInterface`. A caller binding this
+     * result itself registers `$queue->dispose(...)` on the scope it
+     * binds into; `Kinetis\Queue\PackageBootstrap` does that for the
+     * queue `QUEUE_CONNECTION=sql` builds.
+     */
     public static function fromConfig(Config $config, string $connectionName = 'default'): SqlQueue
     {
+        $link = ConnectionFactory::fromConfig($config, $connectionName);
+
         return new SqlQueue(
-            ConnectionFactory::fromConfig($config, $connectionName),
+            $link,
             self::visibilityTimeoutSeconds($config, $connectionName),
+            $link->close(...),
         );
     }
 

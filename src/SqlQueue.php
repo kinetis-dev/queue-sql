@@ -4,12 +4,14 @@ declare(strict_types=1);
 
 namespace Kinetis\QueueSql;
 
+use Closure;
 use Kinetis\Instrumentation\Telemetry;
 use Kinetis\Persistence\Contract\SqlLink;
 use Kinetis\Persistence\Contract\SqlTransaction;
 use Kinetis\Async\Timer;
 use Kinetis\Persistence\TransactionGuard;
 use Kinetis\Queue\ClearableQueueInterface;
+use Kinetis\Queue\DisposableQueueInterface;
 use Kinetis\Queue\Exception\StaleJobHandleException;
 use Kinetis\Queue\Job;
 use Kinetis\Queue\JobSerializer;
@@ -69,7 +71,7 @@ use Throwable;
  * finds no row and raises Exception\StaleJobHandleException instead of
  * settling the reservation somebody else now holds.
  */
-final class SqlQueue implements ClearableQueueInterface
+final class SqlQueue implements ClearableQueueInterface, DisposableQueueInterface
 {
     private const TABLE = 'kinetis_queue_jobs';
 
@@ -80,11 +82,19 @@ final class SqlQueue implements ClearableQueueInterface
     private const POLL_INTERVAL_SECONDS = 1.0;
 
     /**
+     * $db is the caller's link and stays the caller's to close:
+     * $disposer is null here, so dispose() releases nothing. A caller
+     * handing this queue a link of its own passes `$link->close(...)`
+     * to make the queue own it, which is what
+     * {@see SqlQueueFactory::fromConfig()} does for the link it opens.
+     *
      * @param SqlLink $db
+     * @param ?Closure(): void $disposer
      */
     public function __construct(
         private readonly SqlLink $db,
         private readonly int $visibilityTimeoutSeconds = 300,
+        private ?Closure $disposer = null,
     ) {
         // 0 or a negative value would make reserveNext()'s own query
         // match a row reserved an instant ago (0) or one reserved in the
@@ -423,6 +433,19 @@ final class SqlQueue implements ClearableQueueInterface
         return $this->db
             ->execute(self::DELETE_TABLE . ' WHERE queue = ? AND reserved_at IS NULL', [$queue])
             ->getRowCount() ?? 0;
+    }
+
+    /**
+     * Closes the link this queue owns, if it was given one to own. The
+     * disposer is dropped as it runs, so a second call releases nothing
+     * a second time.
+     */
+    #[\Override]
+    public function dispose(): void
+    {
+        $disposer = $this->disposer;
+        $this->disposer = null;
+        $disposer?->__invoke();
     }
 
     /**
