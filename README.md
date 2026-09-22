@@ -132,7 +132,12 @@ link stays yours. See
 "Connection ownership".
 
 `pushOn()` takes a raw `Kinetis\Persistence\Contract\SqlTransaction`;
-an ORM transaction session does not expose its transaction.
+an ORM transaction session does not expose its transaction. If ORM work
+must schedule a job atomically, map an application outbox intent as an
+entity with a `#[BelongsTo]` to what it depends on, persist both and
+flush once, then publish after the transaction returns — see
+[kinetis.dev/docs/orm.html](https://kinetis.dev/docs/orm.html#locking-rows-or-entities-and-sql-in-one-transaction)'s
+"Locking rows, or entities and SQL in one transaction".
 
 ## Configuration
 
