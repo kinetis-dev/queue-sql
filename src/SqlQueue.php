@@ -18,6 +18,7 @@ use Kinetis\Queue\JobSerializer;
 use Kinetis\Queue\JobSettlement;
 use Kinetis\Queue\QueueContract;
 use Kinetis\Queue\QueuedJob;
+use Kinetis\Queue\RenewableQueueInterface;
 use Psr\Log\NullLogger;
 use function Kinetis\Async\concurrently;
 use Throwable;
@@ -56,12 +57,15 @@ use Throwable;
  * $visibilityTimeoutSeconds is the finite reclaim window for a row whose
  * worker crashed between pop() and settlement: reserveNext() also matches
  * a row whose `reserved_at` is older than `now - $timeout` and increments
- * `attempts` on reclaim. The window is not renewed, so a job still running
- * when it expires can execute alongside its replacement; size the window
- * above normal job duration and keep handlers idempotent. `reserved_at` is
- * written and compared against this process's own `time()`, not the
- * database's clock, so skew between workers shifts when a reservation
- * looks expired.
+ * `attempts` on reclaim. The window is renewed while its job runs — this
+ * queue declares Kinetis\Queue\RenewableQueueInterface and QueueWorker
+ * rewrites `reserved_at` at half the window for as long as the handler is
+ * running — so the setting sizes how long a *crashed* worker's row waits,
+ * not how long a job may take. Delivery is still at-least-once, so keep
+ * handlers idempotent. `reserved_at` is written and compared against this
+ * process's own `time()`, not the database's clock, so skew between
+ * workers shifts when a reservation looks expired; a renewal writes that
+ * same worker clock, which is the clock the row was reserved with.
  *
  * A reclaim makes the earlier delivery obsolete while its worker may
  * still be running, so every reservation and reclaim writes a fresh
@@ -71,7 +75,7 @@ use Throwable;
  * finds no row and raises Exception\StaleJobHandleException instead of
  * settling the reservation somebody else now holds.
  */
-final class SqlQueue implements ClearableQueueInterface, DisposableQueueInterface
+final class SqlQueue implements ClearableQueueInterface, DisposableQueueInterface, RenewableQueueInterface
 {
     private const TABLE = 'kinetis_queue_jobs';
 
@@ -348,6 +352,37 @@ final class SqlQueue implements ClearableQueueInterface, DisposableQueueInterfac
     public function fail(QueuedJob $job): void
     {
         $this->settle(JobSettlement::Fail, $job->queue, self::receipt($job));
+    }
+
+    #[\Override]
+    public function visibilityTimeoutSeconds(): int
+    {
+        return $this->visibilityTimeoutSeconds;
+    }
+
+    /**
+     * Restamps `reserved_at` to this worker's own `time()` — the same
+     * clock reserveNext() wrote and compares against — for the one row
+     * this delivery holds. The reservation token in the predicate is the
+     * fence: a row another worker has since reclaimed carries a
+     * different token and is left alone.
+     *
+     * The affected-row count is not read and no stale exception is
+     * raised. MySQL reports 0 changed rows for an UPDATE
+     * that writes the value already stored, which is exactly what a
+     * renewal landing in the same second as the reservation does, so the
+     * count cannot tell a lapsed delivery from a timely repeat. A
+     * transport or backend failure propagates like any other statement's.
+     */
+    #[\Override]
+    public function renew(QueuedJob $job): void
+    {
+        $reservation = self::receipt($job);
+
+        $this->db->execute(
+            self::UPDATE_TABLE . ' SET reserved_at = ? WHERE id = ? AND reserved_token = ?',
+            [self::now(), $reservation->id, $reservation->token],
+        );
     }
 
     /**

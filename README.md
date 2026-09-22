@@ -62,10 +62,17 @@ Every reservation and every timeout reclaim writes a fresh random
 *and* that token. A settlement arriving after another worker reclaimed
 the row therefore writes nothing and raises
 `Kinetis\Queue\Exception\StaleJobHandleException`, which `queue:work`
-reports as a lost delivery instead of settling somebody else's. Still
-keep the visibility timeout comfortably longer than your slowest job:
-fencing keeps a late settlement from doing damage, it does not stop the
-job from running twice.
+reports as a lost delivery instead of settling somebody else's.
+
+`SqlQueue` also declares `Kinetis\Queue\RenewableQueueInterface`, so
+`queue:work` restamps a running job's `reserved_at` at half
+`QUEUE_VISIBILITY_TIMEOUT_SECONDS` — one `UPDATE` under the same row-id
+and token predicate, touching neither `attempts` nor `available_at`. The
+setting therefore sizes crash recovery, not job duration. A reservation
+still expires under a job whose worker died and under a handler that
+never yields to the event loop, so keep handlers idempotent: fencing
+keeps a late settlement from doing damage, it does not stop the job from
+running twice.
 
 ## Enqueueing inside your own transaction
 
@@ -143,7 +150,7 @@ key this package introduces itself:
 
 | Key | Default | Purpose |
 |---|---|---|
-| `QUEUE_VISIBILITY_TIMEOUT_SECONDS` | `300` | Seconds before a crashed worker's reserved job becomes poppable again. Must be a positive integer. |
+| `QUEUE_VISIBILITY_TIMEOUT_SECONDS` | `300` | Seconds before a crashed worker's reserved job becomes poppable again; `queue:work` renews a running job's reservation at half this. Must be a positive integer. |
 
 Both are scoped by `QUEUE_CONNECTION_NAME` the same way every other
 backend's keys are. [`kinetis/queue`](https://github.com/kinetis-dev/queue)'s own keys (`QUEUE_CONNECTION`,

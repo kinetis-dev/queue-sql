@@ -11,6 +11,7 @@ use Kinetis\Queue\Exception\InvalidQueueArgumentException;
 use Kinetis\Queue\ClearableQueueInterface;
 use Kinetis\Queue\Exception\MalformedQueuedJobDataException;
 use Kinetis\Queue\QueuedJob;
+use Kinetis\Queue\RenewableQueueInterface;
 use Kinetis\QueueSql\Reservation;
 use Kinetis\QueueSql\SqlQueue;
 use Kinetis\QueueSql\Tests\Fixtures\RecordingJob;
@@ -478,5 +479,63 @@ final class SqlQueueTest extends TestCase
     private static function clearThrough(ClearableQueueInterface $queue, string $name): int
     {
         return $queue->clear($name);
+    }
+
+    public function test_the_configured_window_is_what_the_renewal_capability_reports(): void
+    {
+        $queue = new SqlQueue($this->neverTouchedLink(), visibilityTimeoutSeconds: 30);
+
+        self::assertInstanceOf(RenewableQueueInterface::class, $queue);
+        self::assertSame(30, $queue->visibilityTimeoutSeconds());
+    }
+
+    /**
+     * One fenced UPDATE: `reserved_at` restamped to the worker's own
+     * clock — the clock the reservation itself was written with — for
+     * the row id and reservation token this delivery names, and nothing
+     * else. Neither `attempts` nor `available_at` moves: a renewal
+     * consumes nothing and schedules nothing.
+     */
+    public function test_renewing_restamps_only_this_delivery_s_own_row(): void
+    {
+        $link = new RecordingSqlLink();
+        $queue = new SqlQueue($link);
+
+        $before = date('Y-m-d H:i:s');
+        $queue->renew(self::delivery(new Reservation(7, 'abc')));
+        $after = date('Y-m-d H:i:s');
+
+        self::assertCount(1, $link->executed);
+        [$sql, $params] = $link->executed[0];
+
+        self::assertStringContainsString('UPDATE kinetis_queue_jobs SET reserved_at = ?', $sql);
+        self::assertStringContainsString('WHERE id = ? AND reserved_token = ?', $sql);
+        self::assertStringNotContainsString('attempts', $sql);
+        self::assertStringNotContainsString('available_at', $sql);
+
+        self::assertGreaterThanOrEqual($before, $params[0]);
+        self::assertLessThanOrEqual($after, $params[0]);
+        self::assertSame([7, 'abc'], \array_slice($params, 1));
+    }
+
+    /**
+     * RecordingSqlLink reports one affected row, so this proves the
+     * statement is issued rather than what its count says. The
+     * discriminating half is above: nothing reads getRowCount(), so
+     * MySQL's 0 for an UPDATE writing the second already stored cannot
+     * be mistaken for a lapsed delivery.
+     */
+    public function test_a_renewal_raises_nothing_and_sends_nothing_further(): void
+    {
+        $link = new RecordingSqlLink();
+
+        new SqlQueue($link)->renew(self::delivery(new Reservation(7, 'abc')));
+
+        self::assertCount(1, $link->executed);
+    }
+
+    private static function delivery(Reservation $reservation): QueuedJob
+    {
+        return new QueuedJob(RecordingJob::class, ['message' => 'work'], handle: $reservation, queue: 'default');
     }
 }
