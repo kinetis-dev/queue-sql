@@ -39,7 +39,7 @@ final class SqlQueueFactory
      * `Kinetis\Queue\DisposableQueueInterface`. A caller binding this
      * result itself registers `$queue->dispose(...)` on the scope it
      * binds into; `Kinetis\Queue\PackageBootstrap` does that for the
-     * queue `QUEUE_CONNECTION=sql` builds.
+     * queue connection it binds.
      */
     public static function fromConfig(Config $config, string $connectionName = 'default'): SqlQueue
     {

@@ -137,9 +137,9 @@ final class SqlQueue implements ClearableQueueInterface, DisposableQueueInterfac
      * committed, rolled back, nested inside another transaction, or
      * retained past the call, and the constructor link is untouched.
      * That makes addressing the database holding `kinetis_queue_jobs`
-     * the caller's job: `QUEUE_CONNECTION_NAME` picks the connection
-     * behind the constructor link and does not redirect a supplied
-     * transaction.
+     * the caller's job: the queue connection's own name picks/scopes the
+     * connection behind the constructor link and does not redirect a
+     * supplied transaction.
      *
      * Push telemetry closes when the INSERT statement completes, so the
      * span reports the enqueue statement rather than the later commit.

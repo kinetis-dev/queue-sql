@@ -99,8 +99,8 @@ nests, or reaches for the queue's own connection, so ending the
 transaction stays yours.
 
 The transaction must address the database holding `kinetis_queue_jobs`.
-`QUEUE_CONNECTION_NAME` picks the connection behind `push()` and does not
-redirect a transaction you supply.
+The queue connection's own name picks the connection behind `push()`
+and does not redirect a transaction you supply.
 
 This is `kinetis/queue-sql`'s own API, not part of `QueueInterface`, so
 it needs a `SqlQueue` rather than the interface the container binds.
@@ -157,8 +157,10 @@ key this package introduces itself:
 |---|---|---|
 | `QUEUE_VISIBILITY_TIMEOUT_SECONDS` | `300` | Seconds before a crashed worker's reserved job becomes poppable again; `queue:work` renews a running job's reservation at half this. Must be a positive integer. |
 
-Both are scoped by `QUEUE_CONNECTION_NAME` the same way every other
-backend's keys are. [`kinetis/queue`](https://github.com/kinetis-dev/queue)'s own keys (`QUEUE_CONNECTION`,
+Both are scoped by the queue connection's own name, the same way every
+other backend's keys are; see
+[kinetis.dev/docs/queue-sql.html#named-connections](https://kinetis.dev/docs/queue-sql.html#named-connections).
+[`kinetis/queue`](https://github.com/kinetis-dev/queue)'s own keys (`QUEUE_CONNECTION`,
 `QUEUE_MAX_ATTEMPTS`, ...) are documented in that package; full
 reference:
 [kinetis.dev/docs/config.html](https://kinetis.dev/docs/config.html).
