@@ -144,8 +144,9 @@ final class SqlQueue implements ClearableQueueInterface, DisposableQueueInterfac
      * Push telemetry closes when the INSERT statement completes, so the
      * span reports the enqueue statement rather than the later commit.
      *
-     * This route is for callers using raw persistence transactions. An
-     * ORM transaction session does not expose its transaction.
+     * Any SqlTransaction works: a raw persistence transaction, or the
+     * SessionTransaction a kinetis/orm OrmFactory::transaction() session
+     * passes its callback as the second argument.
      */
     public function pushOn(
         SqlTransaction $transaction,
