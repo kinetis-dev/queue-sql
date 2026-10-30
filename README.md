@@ -137,6 +137,11 @@ callback's second argument — see
 [kinetis.dev/docs/orm.html](https://kinetis.dev/docs/orm.html#enqueueing-a-job-with-the-session)'s
 "Enqueueing a job with the session".
 
+To hand work to Redis, SQS or RabbitMQ, or to a broadcast, atomically with
+your writes, `pushOn()` a relay job whose handler does that step — see
+[kinetis.dev/docs/queue-sql.html](https://kinetis.dev/docs/queue-sql.html#handing-off-to-another-backend-atomically)'s
+"Handing off to another backend atomically".
+
 ## Configuration
 
 ```
