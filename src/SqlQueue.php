@@ -532,16 +532,6 @@ final class SqlQueue implements ClearableQueueInterface, DisposableQueueInterfac
             ...$queues,
         ];
 
-        /**
-         * @psalm-suppress NoValue Psalm's inference for
-         *     TransactionGuard::transaction()'s generic T against the
-         *     SqlLink/SqlTransaction contracts collapses to an impossible
-         *     type for a closure with two return points (null and array).
-         *     Not reproducible in a standalone repro with plain generic
-         *     types, so the trigger is the real amphp/sql template shapes.
-         *     reserveNext()'s behavior is verified against real
-         *     MySQL/MariaDB containers in tests-integration/.
-         */
         return $guard->transaction($this->db, function ($tx) use ($sql, $params) {
             $row = $tx->execute($sql, $params)->fetchRow();
 
