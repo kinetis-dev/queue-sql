@@ -25,7 +25,10 @@ use Kinetis\Migrations\Migration;
 // reinterprets a bound literal through the connection's session
 // time_zone and, in strict mode, rejects one that falls in that zone's
 // skipped daylight-saving hour. DATETIME stores exactly the UTC
-// wall-clock literal SqlQueue binds.
+// wall-clock literal SqlQueue binds. Hand-written SQL comparing them with
+// NOW() or CURRENT_TIMESTAMP is correct only in a UTC session;
+// UTC_TIMESTAMP() is correct in any. See the kinetis/queue-sql guide's
+// "Stored times" section.
 
 return new class implements Migration
 {

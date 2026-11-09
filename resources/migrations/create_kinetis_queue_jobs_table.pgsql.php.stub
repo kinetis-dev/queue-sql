@@ -19,6 +19,12 @@ use Kinetis\Migrations\Migration;
 // its own separate CREATE INDEX statement. Its default collation already
 // compares `queue` and `reserved_token` byte-exactly, which the MySQL
 // stub has to ask for.
+//
+// The time columns hold UTC wall-clock times written by SqlQueue, and
+// TIMESTAMP (without time zone) stores them as written. Hand-written SQL
+// comparing them with NOW() or CURRENT_TIMESTAMP is correct only in a UTC
+// session; NOW() AT TIME ZONE 'UTC' is correct in any. See the
+// kinetis/queue-sql guide's "Stored times" section.
 
 return new class implements Migration
 {
