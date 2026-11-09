@@ -20,6 +20,12 @@ use Kinetis\Migrations\Migration;
 // equality — a queue name the caller asked for, and the token fencing a
 // settlement to the reservation that produced it. Postgres compares
 // byte-exactly already.
+//
+// The time columns are DATETIME, not TIMESTAMP: MySQL's TIMESTAMP
+// reinterprets a bound literal through the connection's session
+// time_zone and, in strict mode, rejects one that falls in that zone's
+// skipped daylight-saving hour. DATETIME stores exactly the UTC
+// wall-clock literal SqlQueue binds.
 
 return new class implements Migration
 {
@@ -31,13 +37,13 @@ return new class implements Migration
                 class VARCHAR(255) NOT NULL,
                 queue VARCHAR(255) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT 'default',
                 args TEXT NOT NULL,
-                available_at TIMESTAMP NOT NULL,
-                reserved_at TIMESTAMP NULL,
+                available_at DATETIME NOT NULL,
+                reserved_at DATETIME NULL,
                 reserved_token VARCHAR(32) CHARACTER SET ascii COLLATE ascii_bin NULL,
                 attempts INT UNSIGNED NOT NULL DEFAULT 0,
                 max_attempts INT UNSIGNED NULL,
                 metadata TEXT NULL,
-                created_at TIMESTAMP NOT NULL,
+                created_at DATETIME NOT NULL,
                 INDEX kinetis_queue_jobs_queue_available_at_index (queue, available_at, reserved_at)
             )
             SQL);

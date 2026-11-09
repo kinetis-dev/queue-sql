@@ -65,7 +65,12 @@ use Throwable;
  * handlers idempotent. `reserved_at` is written and compared against this
  * process's own `time()`, not the database's clock, so skew between
  * workers shifts when a reservation looks expired; a renewal writes that
- * same worker clock, which is the clock the row was reserved with.
+ * same worker clock, which is the clock the row was reserved with. Every
+ * timestamp this queue writes or compares is that instant as a UTC
+ * `Y-m-d H:i:s` string, whatever PHP's `date.timezone`, so workers in
+ * different zones agree and a DST transition in PHP's zone never moves
+ * a cutoff. docs/queue-sql.md states what each column type does with
+ * those strings.
  *
  * A reclaim makes the earlier delivery obsolete while its worker may
  * still be running, so every reservation and reclaim writes a fresh
@@ -325,7 +330,7 @@ final class SqlQueue implements ClearableQueueInterface, DisposableQueueInterfac
     /**
      * Clears the reservation, credits the attempt for this delivery only,
      * and moves `available_at` to `now + $delaySeconds` — the same column
-     * and the same `date('Y-m-d H:i:s')` format push() writes a delayed
+     * and the same UTC `Y-m-d H:i:s` format push() writes a delayed
      * enqueue with, and the one reserveNext() already requires to be due
      * before it will reserve a row. A delayed retry therefore needs no
      * schema change and no second mechanism: it is the existing fenced
@@ -578,6 +583,6 @@ final class SqlQueue implements ClearableQueueInterface, DisposableQueueInterfac
 
     private static function formatTimestamp(int $unixTimestamp): string
     {
-        return date('Y-m-d H:i:s', $unixTimestamp);
+        return gmdate('Y-m-d H:i:s', $unixTimestamp);
     }
 }

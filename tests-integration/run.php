@@ -309,13 +309,13 @@ $mysql->execute(<<<'SQL'
         class VARCHAR(255) NOT NULL,
         queue VARCHAR(255) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT 'default',
         args TEXT NOT NULL,
-        available_at TIMESTAMP NOT NULL,
-        reserved_at TIMESTAMP NULL,
+        available_at DATETIME NOT NULL,
+        reserved_at DATETIME NULL,
         reserved_token VARCHAR(32) CHARACTER SET ascii COLLATE ascii_bin NULL,
         attempts INT UNSIGNED NOT NULL DEFAULT 0,
         max_attempts INT UNSIGNED NULL,
         metadata TEXT NULL,
-        created_at TIMESTAMP NOT NULL,
+        created_at DATETIME NOT NULL,
         INDEX kinetis_queue_jobs_queue_available_at_index (queue, available_at, reserved_at)
     )
     SQL);

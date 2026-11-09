@@ -501,9 +501,9 @@ final class SqlQueueTest extends TestCase
         $link = new RecordingSqlLink();
         $queue = new SqlQueue($link);
 
-        $before = date('Y-m-d H:i:s');
+        $before = gmdate('Y-m-d H:i:s');
         $queue->renew(self::delivery(new Reservation(7, 'abc')));
-        $after = date('Y-m-d H:i:s');
+        $after = gmdate('Y-m-d H:i:s');
 
         self::assertCount(1, $link->executed);
         [$sql, $params] = $link->executed[0];
