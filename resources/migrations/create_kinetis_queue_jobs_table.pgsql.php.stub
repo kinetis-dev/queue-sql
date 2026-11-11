@@ -9,7 +9,7 @@ use Kinetis\Migrations\Migration;
 // Postgres version. Copy this file into your own migrations/ directory
 // (see kinetis/migrations), renaming it with a timestamp prefix, e.g.
 // 20260810143000_create_kinetis_queue_jobs_table.php.
-// Required by Kinetis\Queue\SqlQueue.
+// Required by Kinetis\QueueSql\SqlQueue.
 //
 // BIGSERIAL is the Postgres equivalent of MySQL's BIGINT UNSIGNED
 // AUTO_INCREMENT — see the .mysql. sibling stub; migrations are raw SQL

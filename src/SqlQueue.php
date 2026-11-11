@@ -69,8 +69,8 @@ use Throwable;
  * timestamp this queue writes or compares is that instant as a UTC
  * `Y-m-d H:i:s` string, whatever PHP's `date.timezone`, so workers in
  * different zones agree and a DST transition in PHP's zone never moves
- * a cutoff. docs/queue-sql.md states what each column type does with
- * those strings.
+ * a cutoff. {@link https://kinetis.dev/docs/queue-sql.html} states what
+ * each column type does with those strings.
  *
  * A reclaim makes the earlier delivery obsolete while its worker may
  * still be running, so every reservation and reclaim writes a fresh

@@ -9,7 +9,7 @@ use Kinetis\Migrations\Migration;
 // MySQL version. Copy this file into your own migrations/ directory (see
 // kinetis/migrations), renaming it with a timestamp prefix, e.g.
 // 20260810143000_create_kinetis_queue_jobs_table.php.
-// Required by Kinetis\Queue\SqlQueue.
+// Required by Kinetis\QueueSql\SqlQueue.
 //
 // AUTO_INCREMENT/UNSIGNED are MySQL-only syntax — see the .pgsql. sibling
 // stub for the Postgres equivalent; migrations are raw SQL by design, so
